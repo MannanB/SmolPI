@@ -1,0 +1,58 @@
+<mujoco model="two_wheel_camera_bot_platform_world">
+  <compiler angle="degree" coordinate="local"/>
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+
+  <visual>
+    <global offwidth="1280" offheight="960"/>
+    <rgba haze="0 0 0 0"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker"
+             width="512" height="512"
+             rgb1="0.2 0.2 0.2" rgb2="0.8 0.8 0.8"/>
+    <material name="gridmat" texture="grid" texrepeat="8 8" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 5.5" dir="0 0 -1" diffuse="0.32 0.32 0.32" ambient="0.12 0.12 0.12"/>
+    <light pos="5 -4 6" dir="-0.9 0.2 -1" diffuse="0.2 0.2 0.2"/>
+    <light pos="-5 4 6" dir="0.9 -0.2 -1" diffuse="0.2 0.2 0.2"/>
+    <light pos="5 4 6" dir="-0.7 -0.7 -1" diffuse="0.16 0.16 0.16"/>
+    <light pos="-5 -4 6" dir="0.7 0.7 -1" diffuse="0.16 0.16 0.16"/>
+
+    <geom name="floor" type="plane" size="20 20 0.1"
+          material="gridmat" friction="1.2 0.1 0.1"/>
+
+    <!-- Top-down omni camera covering robot + all platforms -->
+    <camera name="omniscient_cam"
+            pos="0 0 8.5"
+            xyaxes="1 0 0 0 1 0"
+            fovy="70"/>
+
+    <include file="robot.xml"/>
+
+    <!-- Platforms around the robot -->
+    <geom name="platform_red_45" type="box"
+          pos="1.4 1.4 0.02"
+          size="0.35 0.35 0.02"
+          rgba="1 0.1 0.1 1"/>
+    <geom name="platform_blue_m45" type="box"
+          pos="1.4 -1.4 0.02"
+          size="0.35 0.35 0.02"
+          rgba="0.1 0.3 1 1"/>
+    <geom name="platform_green_135" type="box"
+          pos="-1.4 1.4 0.02"
+          size="0.35 0.35 0.02"
+          rgba="0.1 0.85 0.2 1"/>
+    <geom name="platform_pink_m135" type="box"
+          pos="-1.4 -1.4 0.02"
+          size="0.35 0.35 0.02"
+          rgba="1 0.35 0.75 1"/>
+  </worldbody>
+
+  <actuator>
+    <motor name="left_motor" joint="left_wheel_joint" gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+    <motor name="right_motor" joint="right_wheel_joint" gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+  </actuator>
+</mujoco>

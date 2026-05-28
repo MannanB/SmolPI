@@ -1,0 +1,67 @@
+<mujocoinclude>
+  <body name="bot" pos="0 0 0.18">
+    <freejoint/>
+
+    <geom name="chassis" type="box" size="0.28 0.18 0.08"
+          mass="4.0" rgba="0.1 0.3 0.8 1"/>
+
+    <!-- Simple V-plow on the robot front -->
+    <geom name="plow_left" type="box"
+          pos="0.44 0.20 -0.05"
+          size="0.18 0.02 0.03"
+          euler="0 0 30"
+          mass="0.08"
+          rgba="0.75 0.75 0.78 1"/>
+    <geom name="plow_right" type="box"
+          pos="0.44 -0.20 -0.05"
+          size="0.18 0.02 0.03"
+          euler="0 0 -30"
+          mass="0.08"
+          rgba="0.75 0.75 0.78 1"/>
+
+    <!-- Low front bumper prevents spheres from rolling under and lifting the chassis -->
+    <geom name="front_bumper" type="box"
+          pos="0.45 0 -0.085"
+          size="0.05 0.18 0.012"
+          mass="0.05"
+          rgba="0.72 0.72 0.75 1"/>
+
+    <!-- Robot POV camera -->
+    <camera name="front_cam"
+            pos="0.16 0 0.24"
+            xyaxes="0 -1 0 0.22 0 0.98"
+            fovy="90"/>
+
+    <body name="left_wheel" pos="0.14 0.22 -0.08">
+      <joint name="left_wheel_joint" type="hinge"
+             axis="0 1 0"
+             damping="0.01"/>
+      <geom name="left_wheel_geom" type="cylinder"
+            size="0.07 0.035"
+            mass="0.4"
+            rgba="0.05 0.05 0.05 1"
+            friction="2.0 0.1 0.1"
+            euler="90 0 0"/>
+    </body>
+
+    <body name="right_wheel" pos="0.14 -0.22 -0.08">
+      <joint name="right_wheel_joint" type="hinge"
+             axis="0 1 0"
+             damping="0.01"/>
+      <geom name="right_wheel_geom" type="cylinder"
+            size="0.07 0.035"
+            mass="0.4"
+            rgba="0.05 0.05 0.05 1"
+            friction="2.0 0.1 0.1"
+            euler="90 0 0"/>
+    </body>
+
+    <body name="rear_coaster" pos="-0.22 0 -0.10">
+      <geom name="coaster_ball" type="sphere"
+            size="0.045"
+            mass="0.15"
+            rgba="0.8 0.8 0.8 1"
+            friction="0.3 0.02 0.02"/>
+    </body>
+  </body>
+</mujocoinclude>

@@ -1,0 +1,140 @@
+<mujoco model="two_wheel_camera_bot">
+  <compiler angle="degree" coordinate="local"/>
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+
+  <visual>
+    <global offwidth="1280" offheight="960"/>
+    <rgba haze="0 0 0 0"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker"
+             width="512" height="512"
+             rgb1="0.2 0.2 0.2" rgb2="0.8 0.8 0.8"/>
+    <material name="gridmat" texture="grid" texrepeat="8 8" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 5.5" dir="0 0 -1" diffuse="0.32 0.32 0.32" ambient="0.12 0.12 0.12"/>
+    <light pos="5 -4 6" dir="-0.9 0.2 -1" diffuse="0.2 0.2 0.2"/>
+    <light pos="-5 4 6" dir="0.9 -0.2 -1" diffuse="0.2 0.2 0.2"/>
+    <light pos="5 4 6" dir="-0.7 -0.7 -1" diffuse="0.16 0.16 0.16"/>
+    <light pos="-5 -4 6" dir="0.7 0.7 -1" diffuse="0.16 0.16 0.16"/>
+
+    <geom name="floor" type="plane" size="20 20 0.1"
+          material="gridmat" friction="1.2 0.1 0.1"/>
+
+    <!-- Omniscient fixed camera for debugging / viewing rollout -->
+    <camera name="omniscient_cam"
+            pos="-4.2 -5.0 5.4"
+            xyaxes="0.77 -0.64 0 0.34 0.41 0.84"
+            fovy="75"/>
+
+    <geom name="red_box" type="box" pos="3 0 0.25" size="0.25 0.25 0.25"
+          rgba="1 0.1 0.1 1"/>
+
+    <body name="bot" pos="0 0 0.18">
+      <freejoint/>
+
+      <geom name="chassis" type="box" size="0.28 0.18 0.08"
+            mass="4.0" rgba="0.1 0.3 0.8 1"/>
+
+      <!-- Simple V-plow on the robot front -->
+      <geom name="plow_left" type="box"
+            pos="0.44 0.20 -0.05"
+            size="0.18 0.02 0.03"
+            euler="0 0 30"
+            mass="0.08"
+            rgba="0.75 0.75 0.78 1"/>
+      <geom name="plow_right" type="box"
+            pos="0.44 -0.20 -0.05"
+            size="0.18 0.02 0.03"
+            euler="0 0 -30"
+            mass="0.08"
+            rgba="0.75 0.75 0.78 1"/>
+
+      <!-- Low front bumper prevents spheres from rolling under and lifting the chassis -->
+      <geom name="front_bumper" type="box"
+            pos="0.45 0 -0.085"
+            size="0.05 0.18 0.012"
+            mass="0.05"
+            rgba="0.72 0.72 0.75 1"/>
+
+      <!-- Robot POV camera -->
+    <camera name="front_cam"
+            pos="0.16 0 0.24"
+            xyaxes="0 -1 0 0.22 0 0.98"
+            fovy="90"/>
+
+        <body name="left_wheel" pos="0.14 0.22 -0.08">
+        <joint name="left_wheel_joint" type="hinge"
+                axis="0 1 0"
+                damping="0.01"/>
+        <geom name="left_wheel_geom" type="cylinder"
+                size="0.07 0.035"
+                mass="0.4"
+                rgba="0.05 0.05 0.05 1"
+                friction="2.0 0.1 0.1"
+                euler="90 0 0"/>
+        </body>
+
+        <body name="right_wheel" pos="0.14 -0.22 -0.08">
+        <joint name="right_wheel_joint" type="hinge"
+                axis="0 1 0"
+                damping="0.01"/>
+        <geom name="right_wheel_geom" type="cylinder"
+                size="0.07 0.035"
+                mass="0.4"
+                rgba="0.05 0.05 0.05 1"
+                friction="2.0 0.1 0.1"
+                euler="90 0 0"/>
+        </body>
+
+      <body name="rear_coaster" pos="-0.22 0 -0.10">
+        <geom name="coaster_ball" type="sphere"
+              size="0.045"
+              mass="0.15"
+              rgba="0.8 0.8 0.8 1"
+              friction="0.3 0.02 0.02"/>
+      </body>
+    </body>
+
+    <body name="sphere_01" pos="1.4 -0.4 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.95 0.25 0.25 1" friction="0.8 0.03 0.03"/>
+    </body>
+    <body name="sphere_02" pos="1.5 -0.15 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.22 0.8 0.35 1" friction="0.8 0.03 0.03"/>
+    </body>
+    <body name="sphere_03" pos="1.45 0.1 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.2 0.45 0.95 1" friction="0.8 0.03 0.03"/>
+    </body>
+    <body name="sphere_04" pos="1.6 0.35 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.95 0.78 0.2 1" friction="0.8 0.03 0.03"/>
+    </body>
+    <body name="sphere_05" pos="1.8 -0.3 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.8 0.3 0.95 1" friction="0.8 0.03 0.03"/>
+    </body>
+    <body name="sphere_06" pos="1.85 -0.05 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.2 0.85 0.85 1" friction="0.8 0.03 0.03"/>
+    </body>
+    <body name="sphere_07" pos="1.9 0.22 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.95 0.5 0.2 1" friction="0.8 0.03 0.03"/>
+    </body>
+    <body name="sphere_08" pos="2.05 0.5 0.09">
+      <freejoint/>
+      <geom type="sphere" size="0.09" mass="0.4" rgba="0.55 0.95 0.3 1" friction="0.8 0.03 0.03"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="left_motor" joint="left_wheel_joint" gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+    <motor name="right_motor" joint="right_wheel_joint" gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+  </actuator>
+</mujoco>
