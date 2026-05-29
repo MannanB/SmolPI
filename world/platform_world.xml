@@ -30,7 +30,7 @@
             xyaxes="1 0 0 0 1 0"
             fovy="70"/>
 
-    <include file="robot.xml"/>
+    <include file="world/robot.xml"/>
 
     <!-- Platforms around the robot -->
     <geom name="platform_red_45" type="box"

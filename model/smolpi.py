@@ -1,5 +1,6 @@
 import logging
 import math
+import copy
 
 import torch
 from torch import Tensor
@@ -185,16 +186,19 @@ class SmolPI(nn.Module):
         embs = []
         pad_masks = []
         att_masks = []
+        print(images[0].shape, img_masks[0].shape, lang_tokens.shape, lang_masks.shape, len(images), len(img_masks))
 
         # Process images
         for img, img_mask in zip(images, img_masks, strict=True):
 
             def image_embed_func(img):
                 return self.smolvlm_with_expert.embed_image(img)
-
+            
             img_emb = self._apply_checkpoint(image_embed_func, img)
-
+            print("xxx", img_emb.shape, img_mask.shape, img.shape)
             bsize, num_img_embs = img_emb.shape[:2]
+            if img_mask.ndim == 0:
+                img_mask = img_mask.unsqueeze(0)
 
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
@@ -225,6 +229,7 @@ class SmolPI(nn.Module):
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
 
+        # print(embs.shape, pad_masks.shape, att_masks.shape)
         return embs, pad_masks, att_masks
     
     def embed_suffix(self, state, noisy_actions, timestep):
@@ -347,8 +352,78 @@ class SmolPI(nn.Module):
 
         return F.mse_loss(u_t, v_t, reduction="none")
 
+    def denoise_step_from_observation(self, observation, noisy_actions, timestep) -> Tensor:
+        """Same v_theta as denoise_step, but recomputes prefix context for training."""
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(state, noisy_actions, timestep)
+
+        suffix_embs = suffix_embs.to(dtype=self.dtype)
+        prefix_embs = prefix_embs.to(dtype=self.dtype)
+
+        pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+        att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+
+        att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
+        position_ids = torch.cumsum(pad_masks, dim=1) - 1
+        att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
+
+        def forward_func(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids):
+            (_, suffix_out), _ = self.smolvlm_with_expert.forward(
+                attention_mask=att_2d_masks_4d,
+                position_ids=position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs, suffix_embs],
+                use_cache=False,
+            )
+            return suffix_out
+
+        suffix_out = self._apply_checkpoint(
+            forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids
+        )
+        suffix_out = suffix_out[:, -self.config.action_horizon :]
+        suffix_out = suffix_out.to(dtype=torch.float32)
+
+        def action_out_proj_func(suffix_out):
+            return self.action_out_proj(suffix_out)
+
+        return self._apply_checkpoint(action_out_proj_func, suffix_out)
+
+    def ddpo_log_probs(
+        self,
+        observation,
+        noisy_actions: Tensor,
+        next_noisy_actions: Tensor,
+        timesteps: Tensor,
+        num_steps: int,
+        transition_std: float | Tensor = 0.1,
+    ) -> Tensor:
+        """Recompute log p_theta(x_{t-1} | x_t, c) for DDPO/PPO updates."""
+        if noisy_actions.ndim != 4:
+            raise ValueError(f"noisy_actions must be [batch, denoise_steps, horizon, action_dim], got {noisy_actions.shape}")
+
+        dt = -1.0 / float(num_steps)
+        log_probs = []
+        for step in range(noisy_actions.shape[1]):
+            x_t = noisy_actions[:, step]
+            x_prev = next_noisy_actions[:, step]
+            time = timesteps[:, step]
+            v_t = self.denoise_step_from_observation(observation, x_t, time)
+            mean = x_t + dt * v_t
+            log_probs.append(self._ddpo_gaussian_log_prob(x_prev, mean, transition_std))
+        return torch.stack(log_probs, dim=1)
+
     @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
+    def sample_actions(
+        self,
+        device,
+        observation,
+        noise=None,
+        num_steps=10,
+        return_ddpo_data=False,
+        transition_std: float = 0.1,
+    ) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = observation.state.shape[0]
         if noise is None:
@@ -378,20 +453,53 @@ class SmolPI(nn.Module):
 
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
+        noisy_actions = []
+        next_noisy_actions = []
+        timesteps = []
+        log_probs = []
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
+            # Llama attention updates the cache when provided, so clone the
+            # prefix cache each step to keep key/value length stable.
+            step_key_values = copy.deepcopy(past_key_values)
             v_t = self.denoise_step(
                 state,
                 prefix_pad_masks,
-                past_key_values,
+                step_key_values,
                 x_t,
                 expanded_time,
             )
 
-            # Euler step - use new tensor assignment instead of in-place operation
-            x_t = x_t + dt * v_t
+            mean = x_t + dt * v_t
+            if return_ddpo_data:
+                if transition_std <= 0:
+                    raise ValueError("DDPO sampling requires transition_std > 0")
+                sampled_x = mean + transition_std * sample_noise(mean.shape, device)
+                noisy_actions.append(x_t.detach())
+                next_noisy_actions.append(sampled_x.detach())
+                timesteps.append(expanded_time.detach())
+                log_probs.append(self._ddpo_gaussian_log_prob(sampled_x, mean, transition_std).detach())
+                x_t = sampled_x
+            else:
+                x_t = mean
             time += dt
+        if return_ddpo_data:
+            return x_t, {
+                "noisy_actions": torch.stack(noisy_actions, dim=1),
+                "next_noisy_actions": torch.stack(next_noisy_actions, dim=1),
+                "timesteps": torch.stack(timesteps, dim=1),
+                "old_log_probs": torch.stack(log_probs, dim=1),
+                "transition_std": torch.tensor(float(transition_std), device=device, dtype=torch.float32),
+            }
         return x_t
+
+    @staticmethod
+    def _ddpo_gaussian_log_prob(value: Tensor, mean: Tensor, std: float | Tensor) -> Tensor:
+        std = torch.as_tensor(std, device=value.device, dtype=value.dtype)
+        var = std.square()
+        log_scale = torch.log(std)
+        log_prob = -0.5 * ((value - mean).square() / var + 2.0 * log_scale + math.log(2.0 * math.pi))
+        return log_prob.flatten(1).sum(dim=1)
 
     def denoise_step(
         self,

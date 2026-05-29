@@ -33,7 +33,7 @@
     <geom name="red_box" type="box" pos="3 0 0.25" size="0.25 0.25 0.25"
           rgba="1 0.1 0.1 1"/>
 
-    <include file="robot.xml"/>
+    <include file="world/robot.xml"/>
 
     <body name="sphere_01" pos="1.4 -0.4 0.09">
       <freejoint/>

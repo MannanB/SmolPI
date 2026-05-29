@@ -79,7 +79,7 @@ class SmolVLMWithExpertModel(nn.Module):
         use_cache: bool | None = None,
     ):
         if inputs_embeds[1] is None:
-            prefix_output = self.smolvlm.language_model.forward(
+            prefix_output = self.smolvlm.model.text_model.forward(
                 inputs_embeds=inputs_embeds[0],
                 attention_mask=attention_mask,
                 position_ids=position_ids,
