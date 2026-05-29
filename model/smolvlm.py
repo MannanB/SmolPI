@@ -19,7 +19,30 @@ class SmolVLMWithExpertModel(nn.Module):
 
         self.action_expert.model.embed_tokens = None
 
+        self.freeze_smolvlm()
         self.to_bfloat16_for_selected_params(precision)
+        self.keep_trainable_params_float32_for_fp16(precision)
+
+    def freeze_smolvlm(self):
+        """Keep the base SmolVLM fixed while training the action expert."""
+        self.smolvlm.eval()
+        for param in self.smolvlm.parameters():
+            param.requires_grad = False
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.smolvlm.eval()
+        return self
+
+    def keep_trainable_params_float32_for_fp16(
+        self, precision: Literal["bfloat16", "float16", "float32"] | torch.dtype
+    ):
+        if precision not in ("float16", torch.float16):
+            return
+
+        for param in self.action_expert.parameters():
+            if param.requires_grad:
+                param.data = param.data.to(dtype=torch.float32)
 
     def to_bfloat16_for_selected_params(
         self, precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16"
@@ -125,6 +148,9 @@ class SmolVLMWithExpertModel(nn.Module):
                 for i, hidden_states in enumerate(layer_inputs):
                     layer = models[i].layers[layer_idx]
                     hidden_states = layer.input_layernorm(hidden_states)
+                    target_dtype = layer.self_attn.q_proj.weight.dtype
+                    if hidden_states.dtype != target_dtype:
+                        hidden_states = hidden_states.to(dtype=target_dtype)
 
                     input_shape = hidden_states.shape[:-1]
                     head_dim = layer.self_attn.head_dim

@@ -1,0 +1,7 @@
+vids/
+*.pkl
+*.pt
+*.pth
+
+__pycache__
+*.pyc

@@ -186,7 +186,7 @@ class SmolPI(nn.Module):
         embs = []
         pad_masks = []
         att_masks = []
-        print(images[0].shape, img_masks[0].shape, lang_tokens.shape, lang_masks.shape, len(images), len(img_masks))
+        # print(images[0].shape, img_masks[0].shape, lang_tokens.shape, lang_masks.shape, len(images), len(img_masks))
 
         # Process images
         for img, img_mask in zip(images, img_masks, strict=True):
@@ -195,7 +195,7 @@ class SmolPI(nn.Module):
                 return self.smolvlm_with_expert.embed_image(img)
             
             img_emb = self._apply_checkpoint(image_embed_func, img)
-            print("xxx", img_emb.shape, img_mask.shape, img.shape)
+            # print("xxx", img_emb.shape, img_mask.shape, img.shape)
             bsize, num_img_embs = img_emb.shape[:2]
             if img_mask.ndim == 0:
                 img_mask = img_mask.unsqueeze(0)

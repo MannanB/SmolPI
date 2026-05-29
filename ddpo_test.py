@@ -19,11 +19,18 @@ CAM_SIM_WIDTH, CAM_SIM_HEIGHT = 640, 480
 CAM_OMNI_WIDTH, CAM_OMNI_HEIGHT = 1280, 960
 CAM_SIM_FPS = 30
 CAM_OMNI_FPS = 60
-SIM_DURATION_SEC = 2
-CONTROL_FREQ_HZ = 10 # Control frequency for the policy (e.g., 10 Hz means the policy outputs new actions every 0.1 seconds).
-NUM_EPISODES_PER_UPDATE = 1 # Number of parallel episodes to run for each policy update (if doing training).
-REWARD_SCALE = 0.67
+SIM_DURATION_SEC = 4
+CONTROL_FREQ_HZ = 25 # Control frequency for the policy (e.g., 10 Hz means the policy outputs new actions every 0.1 seconds).
+NUM_EPISODES_PER_UPDATE = 2 # Number of parallel episodes to run for each policy update (if doing training).
+REWARD_SCALE = 0.5
 NUM_UPDATES = 1000
+KL_COEF = 0.01
+
+def reset_episode(model: mujoco.MjModel, data: mujoco.MjData):
+    mujoco.mj_resetData(model, data)
+    data.qpos[0] = np.random.uniform(-0.5, 0.5)
+    data.qpos[1] = np.random.uniform(-0.5, 0.5)
+    mujoco.mj_forward(model, data)
 
 def make_writer(path, width, height, fps):
     return cv2.VideoWriter(
@@ -149,7 +156,7 @@ def rollout(
 
     samples = []
 
-    init_position = data.qpos[:2].copy()
+    previous_x = float(data.qpos[0])
     policy.eval()
 
     for chunk_step in range(num_chunks):
@@ -193,9 +200,9 @@ def rollout(
                     omni_frames.append(omni_rgb.copy())
                     omni_cam_video.write(omni_bgr)
             
-        dist_from_start = np.linalg.norm(data.qpos[:2] - init_position)
-
-        reward = REWARD_SCALE * dist_from_start
+        current_x = float(data.qpos[0])
+        reward = REWARD_SCALE * (current_x - previous_x)
+        previous_x = current_x
 
         samples.append(
             {
@@ -295,7 +302,8 @@ def DDPO_update(
         clipped_ratio = ratio.clamp(0.8, 1.2)
         advantages = advantages[:, None].expand_as(new_log_probs)
         surrogate = torch.minimum(ratio * advantages, clipped_ratio * advantages)
-        loss = -surrogate.mean()
+        approx_kl = ((ratio - 1.0) - log_ratio).mean()
+        loss = -surrogate.mean() + KL_COEF * approx_kl
 
     if not torch.isfinite(loss):
         raise RuntimeError("DDPO_update produced a non-finite loss")
@@ -307,8 +315,11 @@ def DDPO_update(
     return {
         "loss": float(loss.detach().item()),
         "mean_reward": float(rewards.mean().detach().item()),
+        "reward_std": float(rewards.std(unbiased=False).detach().item()),
+        "min_reward": float(rewards.min().detach().item()),
+        "max_reward": float(rewards.max().detach().item()),
         "mean_advantage": float(advantages.mean().detach().item()),
-        "approx_kl": float((old_log_probs - new_log_probs).mean().detach().item()),
+        "approx_kl": float(approx_kl.detach().item()),
         "clip_fraction": float(((ratio - 1.0).abs() > 0.2).to(torch.float32).mean().detach().item()),
     }
 
@@ -317,30 +328,34 @@ os.environ.setdefault("MUJOCO_GL", "glfw")
 def main():
     model = mujoco.MjModel.from_xml_string(XML)
     data = mujoco.MjData(model)
+    reset_episode(model, data)
 
-    cfg = SmolPIConfig(action_dim=2, action_horizon=5)
+    cfg = SmolPIConfig(action_dim=2, action_horizon=5, precision=torch.float16)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu" and cfg.precision in (torch.float16, torch.bfloat16):
         cfg.precision = torch.float32
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.smolvlm_id)
     policy = SmolPI(cfg).to(device)
-    optimizer = torch.optim.AdamW(policy.parameters(), lr=1e-5, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW((p for p in policy.parameters() if p.requires_grad), lr=1e-5, weight_decay=1e-4)
     policy.eval()
 
     cam_renderer = mujoco.Renderer(model, height=CAM_SIM_HEIGHT, width=CAM_SIM_WIDTH)
     omni_cam_renderer = mujoco.Renderer(model, height=CAM_OMNI_HEIGHT, width=CAM_OMNI_WIDTH)
 
-    cam_video = make_writer("front_cam_vla_rollout.mp4", CAM_SIM_WIDTH, CAM_SIM_HEIGHT, CAM_SIM_FPS)
-    omni_cam_video = make_writer("omniscient_vla_rollout.mp4", CAM_OMNI_WIDTH, CAM_OMNI_HEIGHT, CAM_OMNI_FPS)
+    cam_video = make_writer("vids/front_cam_vla_rollout.mp4", CAM_SIM_WIDTH, CAM_SIM_HEIGHT, CAM_SIM_FPS)
+    omni_cam_video = make_writer("vids/omniscient_vla_rollout.mp4", CAM_OMNI_WIDTH, CAM_OMNI_HEIGHT, CAM_OMNI_FPS)
 
     update_pbar = tqdm.tqdm(range(NUM_UPDATES), desc="DDPO Updates", unit="update")
-    episode_pbar = tqdm.tqdm(range(NUM_EPISODES_PER_UPDATE), desc="Episodes per Update", unit="episode", leave=False)
+    # episode_pbar = tqdm.tqdm(range(NUM_EPISODES_PER_UPDATE), desc="Episodes per Update", unit="episode", leave=False)
+
+    past_rewards = []
 
     try:
         for update in update_pbar:
             all_samples = []
-            for episode in episode_pbar:
+            episode_returns = []
+            for episode in range(NUM_EPISODES_PER_UPDATE):
                 samples = rollout(
                     model=model,
                     data=data,
@@ -354,23 +369,32 @@ def main():
                     cam_video=cam_video,
                     omni_cam_video=omni_cam_video,
                 )
-                all_samples.extend(samples)
-                data.qpos[:2] = np.random.uniform(-0.5, 0.5, size=2)
-                data.qvel[:] = 0.0
-                mujoco.mj_forward(model, data)
+                print(len(samples), "samples collected")
 
+                all_samples.extend(samples)
+                episode_returns.append(sum(s["reward"] for s in samples))
+                reset_episode(model, data)
             observations, actions, rewards = stack_rollout_batch(all_samples, device, batch_size=len(all_samples))
             metrics = DDPO_update(policy, optimizer, observations, actions, rewards)
+            mean_episode_return = float(np.mean(episode_returns))
             print(
                 f"update={update} samples={len(all_samples)} "
-                f"reward={metrics['mean_reward']:.4f} loss={metrics['loss']:.6f} "
+                f"episode_return={mean_episode_return:.4f} "
+                f"reward={metrics['mean_reward']:.4f} reward_std={metrics['reward_std']:.4f} "
+                f"reward_range=[{metrics['min_reward']:.4f},{metrics['max_reward']:.4f}] loss={metrics['loss']:.6f} "
                 f"kl={metrics['approx_kl']:.6f} clip={metrics['clip_fraction']:.3f}"
             )
+            past_rewards.append(mean_episode_return)
     finally:
         cam_video.release()
         omni_cam_video.release()
         cam_renderer.close()
-        omni_cam_renderer.close()
+        omni_cam_renderer.close() 
+        import pickle
+        with open("vla_rollout_rewards.pkl", "wb") as f:
+            pickle.dump(past_rewards, f)
+        # save the model
+        torch.save(policy.state_dict(), "vla_rollout_policy.pt")
 
 if __name__ == "__main__":
     main()
