@@ -24,7 +24,7 @@ CONTROL_FREQ_HZ = 25 # Control frequency for the policy (e.g., 10 Hz means the p
 NUM_EPISODES_PER_UPDATE = 2 # Number of parallel episodes to run for each policy update (if doing training).
 REWARD_SCALE = 0.5
 NUM_UPDATES = 1000
-KL_COEF = 0.01
+KL_COEF = 0.02
 
 def reset_episode(model: mujoco.MjModel, data: mujoco.MjData):
     mujoco.mj_resetData(model, data)
@@ -174,6 +174,7 @@ def rollout(
                 device,
                 observation,
                 num_steps=10,
+                transition_std=0.25,
                 return_ddpo_data=True,
             )
         action_chunk_np = action_chunk[0].to(dtype=torch.float32).cpu().numpy()
