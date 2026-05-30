@@ -271,9 +271,9 @@ def main():
                 "reward": metrics["mean_reward"],
                 "reward_std": metrics["reward_std"],
                 "episode_return": mean_episode_return,
-                "train_samples": metrics["num_train_samples"],
+                # "train_samples": metrics["num_train_samples"],
                 "batches": metrics["num_minibatches"],
-                "replay": len(replay_buffer),
+                # "replay": len(replay_buffer),
                 "kl": metrics["approx_kl"],
                 "clip": metrics["clip_fraction"],
             })
