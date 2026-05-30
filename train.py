@@ -171,7 +171,7 @@ def DDPO_update(
 
     rewards = torch.tensor([s["reward"] for s in samples], dtype=torch.float32)
     advantages = compute_advantages(rewards)
-    total_samples = len(samples)
+    total_samples = min(len(samples), 200)
 
     policy.train()
     optimizer.zero_grad(set_to_none=True)
@@ -238,25 +238,23 @@ def main():
 
     try:
         for update in update_pbar:
-            all_samples = []
-            episode_returns = []
-            for episode in range(cfg.num_episodes_per_update):
-                objective = make_random_objective(cfg)
-                samples = env.rollout(
-                    policy=policy,
-                    reward_model=objective,
-                    write_to_video=True,
+            objectives = [make_random_objective(cfg) for _ in range(cfg.num_parallel_rollouts)]
+            all_samples = env.rollout(
+                policy=policy,
+                reward_models=objectives,
+                write_to_video=True,
+            )
+            episode_returns = [
+                sum(s["reward"] for s in all_samples if s["env_idx"] == env_idx)
+                for env_idx in range(cfg.num_parallel_rollouts)
+            ]
+            tqdm.write(
+                "collected {} parallel rollouts with {} samples and mean episode return {:.4f}".format(
+                    cfg.num_parallel_rollouts,
+                    len(all_samples),
+                    float(np.mean(episode_returns)),
                 )
-                tqdm.write(
-                    "collected {} rollout with {} samples and episode return {:.4f}".format(
-                        objective.prompt,
-                        len(samples),
-                        sum(s["reward"] for s in samples),
-                    )
-                )
-
-                all_samples.extend(samples)
-                episode_returns.append(sum(s["reward"] for s in samples))
+            )
 
             replay_buffer.add(all_samples)
             train_samples = replay_buffer.shuffled_samples()

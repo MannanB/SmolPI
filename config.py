@@ -30,11 +30,12 @@ class Config(BaseModel):
     cam_sim_output_path: str = "vids/front_cam_vla_rollout.mp4"
     cam_omni_output_path: str = "vids/omniscient_vla_rollout.mp4"
 
-    sim_duration_sec: int = 12
+    sim_duration_sec: int = 8
     control_freq_hz: int = 20
-    num_episodes_per_update: int = 1
+    num_episodes_per_update: int = 10
+    num_parallel_rollouts: int = 10
     num_updates: int = 1000
-    batch_size: int = 20
+    batch_size: int = 40
     replay_buffer_capacity: int = 1000
 
     flow_steps: int = 10

@@ -49,9 +49,14 @@ class MujocoEnvironment:
             xml_str = f.read()
 
         self.model = mujoco.MjModel.from_xml_string(xml_str)
-        self.data = mujoco.MjData(self.model)
+        self.datas = [mujoco.MjData(self.model) for _ in range(cfg.num_parallel_rollouts)]
 
-        self.reset_episode(self.model, self.data)
+        self.reset_episode()
+
+        left_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "left_wheel_joint")
+        right_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "right_wheel_joint")
+        self.left_dof = self.model.jnt_dofadr[left_joint_id]
+        self.right_dof = self.model.jnt_dofadr[right_joint_id]
 
         self.cam_renderer = mujoco.Renderer(self.model, width=cfg.cam_sim_width, height=cfg.cam_sim_height)
         self.omni_cam_renderer = mujoco.Renderer(self.model, width=cfg.cam_omni_width, height=cfg.cam_omni_height)
@@ -60,71 +65,92 @@ class MujocoEnvironment:
         self.omni_cam_video = make_writer(cfg.cam_omni_output_path, cfg.cam_omni_width, cfg.cam_omni_height, cfg.cam_omni_fps)
 
         self.tokenizer = AutoTokenizer.from_pretrained(cfg.smolpi.smolvlm_id)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
     def reset_episode(self, randomize_position: bool = True, randomize_rotation: bool = True):
-        mujoco.mj_resetData(self.model, self.data)
-        if randomize_position:
-            self.data.qpos[0] = np.random.uniform(-0.5, 0.5)
-            self.data.qpos[1] = np.random.uniform(-0.5, 0.5)
-        if randomize_rotation:
-            self.data.qpos[2] = np.random.uniform(-np.pi, np.pi)
-        mujoco.mj_forward(self.model, self.data)
+        for data in self.datas:
+            mujoco.mj_resetData(self.model, data)
+            if randomize_position:
+                data.qpos[0] = np.random.uniform(-0.5, 0.5)
+                data.qpos[1] = np.random.uniform(-0.5, 0.5)
+            if randomize_rotation:
+                data.qpos[2] = np.random.uniform(-np.pi, np.pi)
+            mujoco.mj_forward(self.model, data)
 
-    def reset_episode_via_reward_model(self, reward_model: RewardModel):
-        mujoco.mj_resetData(self.model, self.data)
-        reward_model.init_rollout(self.data)
-        mujoco.mj_forward(self.model, self.data)
+    def reset_episode_via_reward_model(self, reward_models: list[RewardModel]):
+        if len(reward_models) != len(self.datas):
+            raise ValueError(f"expected {len(self.datas)} reward models, got {len(reward_models)}")
+        for i, data in enumerate(self.datas):
+            mujoco.mj_resetData(self.model, data)
+            reward_models[i].init_rollout(data)
+            mujoco.mj_forward(self.model, data)    
 
-    def render_camera(self, renderer: mujoco.Renderer, camera_name: str):
-        renderer.update_scene(self.data, camera=camera_name)
+    def render_camera(self, renderer: mujoco.Renderer, camera_name: str, env_idx: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        data = self.datas[env_idx]
+        renderer.update_scene(data, camera=camera_name)
         rgb = renderer.render()
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         return rgb, bgr
     
-    def get_wheel_speed_state(self) -> np.ndarray:
-        left_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "left_wheel_joint")
-        right_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "right_wheel_joint")
+    def get_wheel_speed_state(self, env_idx: int) -> np.ndarray:
+        data = self.datas[env_idx]
+        return np.array([data.qvel[self.left_dof], data.qvel[self.right_dof]], dtype=np.float32)
 
-        left_dof = self.model.jnt_dofadr[left_joint_id]
-        right_dof = self.model.jnt_dofadr[right_joint_id]
+    def make_observations(
+        self,
+        policy: SmolPI,
+        prompts: list[str],
+        device: torch.device,
+        env_indices: list[int] | None = None,
+    ) -> Observation:
+        if env_indices is None:
+            env_indices = list(range(len(prompts)))
+        if len(prompts) != len(env_indices):
+            raise ValueError(f"got {len(prompts)} prompts for {len(env_indices)} environment indices")
 
-        return np.array([self.data.qvel[left_dof], self.data.qvel[right_dof]], dtype=np.float32)
+        _, h, w = get_vision_input_shape(policy)
+        images = []
+        states = []
+        for env_idx in env_indices:
+            rgb_frame, _ = self.render_camera(self.cam_renderer, "front_cam", env_idx)
+            images.append(frame_to_tensor(rgb_frame, h, w, device))
+            states.append(torch.as_tensor(self.get_wheel_speed_state(env_idx), device=device, dtype=torch.float32))
+
+        tokens = self.tokenizer(prompts, return_tensors="pt", truncation=True, padding=True)
+        input_ids = tokens["input_ids"].to(device=device, dtype=torch.long)
+        attention_mask = tokens["attention_mask"].to(device=device, dtype=torch.bool)
+        image_batch = torch.cat(images, dim=0)
+        state_batch = torch.stack(states, dim=0)
+
+        return Observation(
+            images={"front": image_batch},
+            image_masks={"front": torch.ones(len(env_indices), device=device, dtype=torch.bool)},
+            tokenized_prompt=input_ids,
+            tokenized_prompt_mask=attention_mask,
+            state=state_batch,
+        )
 
     def make_observation(
         self,
         policy: SmolPI,
         prompt: str,
-        rgb_frame: np.ndarray,
         device: torch.device,
+        env_idx: int = 0,
     ) -> Observation:
-        _, h, w = get_vision_input_shape(policy)
-        image = frame_to_tensor(rgb_frame, h, w, device)
-
-        tokens = self.tokenizer(prompt, return_tensors="pt", truncation=True)
-        input_ids = tokens["input_ids"].to(device=device, dtype=torch.long)
-        attention_mask = tokens["attention_mask"].to(device=device, dtype=torch.bool)
-
-        wheel_speeds = self.get_wheel_speed_state()
-        state = torch.as_tensor(wheel_speeds, device=device, dtype=torch.float32).unsqueeze(0)
-
-        return Observation(
-            images={"front": image},
-            image_masks={"front": torch.ones(1, device=device, dtype=torch.bool)},
-            tokenized_prompt=input_ids,
-            tokenized_prompt_mask=attention_mask,
-            state=state,
-        )
+        return self.make_observations(policy, [prompt], device, [env_idx])
 
     def rollout(
         self,
         policy: SmolPI,
-        reward_model: RewardModel,
+        reward_models: list[RewardModel],
         write_to_video: bool = False,
     ):
         
-        self.reset_episode_via_reward_model(reward_model)
+        self.reset_episode_via_reward_model(reward_models)
         
-        mujoco.mj_forward(self.model, self.data) # ensure first observation is created
+        for data in self.datas:
+            mujoco.mj_forward(self.model, data) # ensure first observation is created
 
         cam_frames = []
         omni_frames = []
@@ -141,10 +167,14 @@ class MujocoEnvironment:
         policy.eval()
 
         for chunk_step in range(num_chunks):
-            front_rgb, _ = self.render_camera(self.cam_renderer, "front_cam")
-            observation = self.make_observation(policy, reward_model.prompt, front_rgb, self.cfg.device)
+            observation = self.make_observations(
+                policy,
+                [reward_model.prompt for reward_model in reward_models],
+                self.cfg.device,
+            )
+            
 
-            if self.cfg.smolpi.precision in (torch.float16, torch.bfloat16):
+            if self.cfg.device.type != "cpu" and self.cfg.smolpi.precision in (torch.float16, torch.bfloat16):
                 amp_ctx = torch.autocast(device_type=self.cfg.device.type, dtype=self.cfg.smolpi.precision)
             else:
                 amp_ctx = nullcontext()
@@ -157,48 +187,51 @@ class MujocoEnvironment:
                     transition_std=self.cfg.flow_std,
                     return_ddpo_data=True,
                 )
-            action_chunk_np = action_chunk[0].to(dtype=torch.float32).cpu().numpy()
+            action_chunk_np = action_chunk.to(dtype=torch.float32).cpu().numpy()
 
-            for ctrl_step in range(action_chunk_np.shape[0]):
-                torque_cmd = action_chunk_np[ctrl_step]
-                torque_cmd = np.clip(torque_cmd, -5.0, 5.0)
+            for ctrl_step in range(action_chunk_np.shape[1]):
+                for env_idx, data in enumerate(self.datas):
+                    torque_cmd = np.clip(action_chunk_np[env_idx, ctrl_step], -5.0, 5.0)
 
-                self.data.ctrl[0] = float(torque_cmd[0])
-                self.data.ctrl[1] = float(torque_cmd[1])
+                    data.ctrl[0] = float(torque_cmd[0])
+                    data.ctrl[1] = float(torque_cmd[1])
 
                 for i in range(steps_per_control):
-                    mujoco.mj_step(self.model, self.data)
+                    for data in self.datas:
+                        mujoco.mj_step(self.model, data)
 
-                    step = chunk_step * action_chunk_np.shape[0] * steps_per_control + ctrl_step * steps_per_control + i
+                    step = chunk_step * action_chunk_np.shape[1] * steps_per_control + ctrl_step * steps_per_control + i
 
                     if step % steps_per_frame == 0 and write_to_video and self.cam_video is not None:
-                        front_rgb, front_bgr = self.render_camera(self.cam_renderer, "front_cam")
+                        front_rgb, front_bgr = self.render_camera(self.cam_renderer, "front_cam", env_idx=0)
                         cam_frames.append(front_rgb.copy())
                         self.cam_video.write(front_bgr)
 
                     if step % steps_per_frame_omni == 0 and write_to_video and self.omni_cam_video is not None:
-                        omni_rgb, omni_bgr = self.render_camera(self.omni_cam_renderer, "omniscient_cam")
+                        omni_rgb, omni_bgr = self.render_camera(self.omni_cam_renderer, "omniscient_cam", env_idx=0)
                         omni_frames.append(omni_rgb.copy())
                         self.omni_cam_video.write(omni_bgr)
-                
-            reward = reward_model.update(self.data)
 
-            samples.append(
-                {
-                    "image": observation.images["front"][0].detach().cpu(),
-                    "image_mask": observation.image_masks["front"][0].detach().cpu(),
-                    "prompt_ids": observation.tokenized_prompt[0].detach().cpu(),
-                    "prompt_mask": observation.tokenized_prompt_mask[0].detach().cpu(),
-                    "state": observation.state[0].detach().cpu(),
-                    "actions": torch.from_numpy(action_chunk_np),
-                    "noisy_actions": ddpo_data["noisy_actions"][0].detach().cpu(),
-                    "next_noisy_actions": ddpo_data["next_noisy_actions"][0].detach().cpu(),
-                    "timesteps": ddpo_data["timesteps"][0].detach().cpu(),
-                    "old_log_probs": ddpo_data["old_log_probs"][0].detach().cpu(),
-                    "transition_std": float(ddpo_data["transition_std"].detach().cpu()),
-                    "reward": reward,
-                }
-            )
+            for env_idx, (data, reward_model) in enumerate(zip(self.datas, reward_models, strict=True)):
+                reward = reward_model.update(data)
+                samples.append(
+                    {
+                        "env_idx": env_idx,
+                        "prompt": reward_model.prompt,
+                        "image": observation.images["front"][env_idx].detach().cpu(),
+                        "image_mask": observation.image_masks["front"][env_idx].detach().cpu(),
+                        "prompt_ids": observation.tokenized_prompt[env_idx].detach().cpu(),
+                        "prompt_mask": observation.tokenized_prompt_mask[env_idx].detach().cpu(),
+                        "state": observation.state[env_idx].detach().cpu(),
+                        "actions": torch.from_numpy(action_chunk_np[env_idx]),
+                        "noisy_actions": ddpo_data["noisy_actions"][env_idx].detach().cpu(),
+                        "next_noisy_actions": ddpo_data["next_noisy_actions"][env_idx].detach().cpu(),
+                        "timesteps": ddpo_data["timesteps"][env_idx].detach().cpu(),
+                        "old_log_probs": ddpo_data["old_log_probs"][env_idx].detach().cpu(),
+                        "transition_std": float(ddpo_data["transition_std"].detach().cpu()),
+                        "reward": reward,
+                    }
+                )
             
         return samples
     

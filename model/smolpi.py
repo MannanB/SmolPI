@@ -135,7 +135,7 @@ class SmolPI(nn.Module):
         self.gradient_checkpointing_enable()
 
         torch.set_float32_matmul_precision("high")
-        self.sample_actions = torch.compile(self.sample_actions)
+        self.sample_actions = torch.compile(self.sample_actions, dynamic=False)
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
