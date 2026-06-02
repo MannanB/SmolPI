@@ -1,6 +1,7 @@
 import logging
 import math
 import copy
+from typing import Literal
 
 import torch
 from torch import Tensor
@@ -100,6 +101,23 @@ class SmolPIConfig(BaseModel):
 
     smolvlm_id: str = "HuggingFaceTB/SmolVLM-256M-Instruct"
     action_expert_id: str = "HuggingFaceTB/SmolLM2-135M"
+    train_vlm_with_lora: bool = True
+    vlm_lora_rank: int = 8
+    vlm_lora_alpha: int = 16
+    vlm_lora_dropout: float = 0.05
+    vlm_lora_train_layer_fraction: float = 0.10
+    vlm_lora_layer_selection: Literal["first", "last"] = "last"
+    vlm_lora_target_modules: tuple[str, ...] = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+        "fc1",
+        "fc2",
+    )
     action_dim: int = 16
     action_horizon: int = 10
     precision: torch.dtype = torch.float16
@@ -122,7 +140,19 @@ class SmolPI(nn.Module):
         vlm_config = SmolVLMConfig.from_pretrained(config.smolvlm_id) # HuggingFaceTB/SmolVLM-256M-Instruct
         action_expert_config = LlamaConfig.from_pretrained(config.action_expert_id) # HuggingFaceTB/SmolLM2-135M
         
-        self.smolvlm_with_expert = SmolVLMWithExpertModel(config.smolvlm_id, vlm_config, action_expert_config, precision=config.precision)
+        self.smolvlm_with_expert = SmolVLMWithExpertModel(
+            config.smolvlm_id,
+            vlm_config,
+            action_expert_config,
+            precision=config.precision,
+            use_vlm_lora=config.train_vlm_with_lora,
+            vlm_lora_rank=config.vlm_lora_rank,
+            vlm_lora_alpha=config.vlm_lora_alpha,
+            vlm_lora_dropout=config.vlm_lora_dropout,
+            vlm_lora_target_modules=config.vlm_lora_target_modules,
+            vlm_lora_train_layer_fraction=config.vlm_lora_train_layer_fraction,
+            vlm_lora_layer_selection=config.vlm_lora_layer_selection,
+        )
 
         self.action_in_proj = nn.Linear(config.action_dim, action_expert_config.hidden_size)
         self.action_out_proj = nn.Linear(action_expert_config.hidden_size, config.action_dim)

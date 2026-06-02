@@ -73,9 +73,9 @@ def single_test():
 
 
 if __name__ == "__main__":
-    # print("-- Running All Objectives Test --")
-    # batch_test(baseline=False)
-    # print("\n-- Running Baseline Test --")
-    # batch_test(baseline=True)
-    print("-- Running Single Objective Test --")
-    single_test()
+    print("-- Running All Objectives Test --")
+    batch_test(baseline=False)
+    print("\n-- Running Baseline Test --")
+    batch_test(baseline=True)
+    # print("-- Running Single Objective Test --")
+    # single_test()

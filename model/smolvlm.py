@@ -1,5 +1,6 @@
 
-from typing import Literal
+import math
+from typing import Literal, Sequence
 
 import torch
 from torch import nn
@@ -9,17 +10,79 @@ from transformers import SmolVLMForConditionalGeneration
 from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.llama import modeling_llama
 
+
+class LoRALinear(nn.Module):
+    def __init__(self, base_layer: nn.Linear, rank: int, alpha: int, dropout: float):
+        super().__init__()
+        if rank <= 0:
+            raise ValueError(f"LoRA rank must be positive, got {rank}")
+
+        self.base_layer = base_layer
+        self.lora_dropout = nn.Dropout(dropout)
+        self.lora_A = nn.Linear(
+            base_layer.in_features,
+            rank,
+            bias=False,
+            device=base_layer.weight.device,
+            dtype=base_layer.weight.dtype,
+        )
+        self.lora_B = nn.Linear(
+            rank,
+            base_layer.out_features,
+            bias=False,
+            device=base_layer.weight.device,
+            dtype=base_layer.weight.dtype,
+        )
+        self.scaling = alpha / rank
+
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=5**0.5)
+        nn.init.zeros_(self.lora_B.weight)
+
+        for param in self.base_layer.parameters():
+            param.requires_grad = False
+
+    @property
+    def weight(self):
+        return self.base_layer.weight
+
+    @property
+    def bias(self):
+        return self.base_layer.bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        base_out = self.base_layer(x)
+        lora_x = self.lora_dropout(x)
+        lora_out = self.lora_B(self.lora_A(lora_x)) * self.scaling
+        return base_out + lora_out.to(dtype=base_out.dtype)
+
+
 class SmolVLMWithExpertModel(nn.Module):
     def __init__(self, smolvlm_id, vlm_config_hf, action_expert_config_hf, \
-                 precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16"):
+                 precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16",
+                 use_vlm_lora: bool = True,
+                 vlm_lora_rank: int = 16,
+                 vlm_lora_alpha: int = 32,
+                 vlm_lora_dropout: float = 0.05,
+                 vlm_lora_target_modules: Sequence[str] | None = None,
+                 vlm_lora_train_layer_fraction: float = 1.0,
+                 vlm_lora_layer_selection: Literal["first", "last"] = "last"):
         super().__init__()
 
         self.smolvlm = SmolVLMForConditionalGeneration.from_pretrained(smolvlm_id, config=vlm_config_hf).to(precision)
+        if use_vlm_lora:
+            self.enable_smolvlm_lora(
+                rank=vlm_lora_rank,
+                alpha=vlm_lora_alpha,
+                dropout=vlm_lora_dropout,
+                target_modules=vlm_lora_target_modules,
+                train_layer_fraction=vlm_lora_train_layer_fraction,
+                layer_selection=vlm_lora_layer_selection,
+            )
         self.action_expert = LlamaForCausalLM(config=action_expert_config_hf)
 
         self.action_expert.model.embed_tokens = None
 
-        self.freeze_smolvlm()
+        # self.freeze_smolvlm()
         self.to_bfloat16_for_selected_params(precision)
         self.keep_trainable_params_float32_for_fp16(precision)
 
@@ -29,9 +92,99 @@ class SmolVLMWithExpertModel(nn.Module):
         for param in self.smolvlm.parameters():
             param.requires_grad = False
 
+    def enable_smolvlm_lora(
+        self,
+        rank: int = 16,
+        alpha: int = 32,
+        dropout: float = 0.05,
+        target_modules: Sequence[str] | None = None,
+        train_layer_fraction: float = 1.0,
+        layer_selection: Literal["first", "last"] = "last",
+    ):
+        """Freeze SmolVLM base weights and train in-place LoRA adapters instead."""
+
+        if target_modules is None:
+            target_modules = (
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "out_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+                "fc1",
+                "fc2",
+            )
+
+        target_modules = tuple(target_modules)
+        enabled_layers = self._select_lora_layers(train_layer_fraction, layer_selection)
+        for param in self.smolvlm.parameters():
+            param.requires_grad = False
+
+        replaced = 0
+        for module_name, module in list(self.smolvlm.named_modules()):
+            # print(f"Checking SmolVLM module for LoRA replacement: {module_name}")
+            child_name = module_name.rsplit(".", 1)[-1]
+            if child_name not in target_modules or not isinstance(module, nn.Linear):
+                continue
+            layer_key = self._module_layer_key(module_name)
+            if layer_key is not None and layer_key not in enabled_layers:
+                continue
+
+            parent = self.smolvlm
+            if "." in module_name:
+                parent_name = module_name.rsplit(".", 1)[0]
+                parent = self.smolvlm.get_submodule(parent_name)
+            setattr(parent, child_name, LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout))
+            replaced += 1
+
+
+        if replaced == 0:
+            raise ValueError(f"No SmolVLM nn.Linear modules matched LoRA targets: {target_modules}")
+
+    def _module_layer_key(self, module_name: str) -> tuple[str, int] | None:
+        parts = module_name.split(".")
+        for idx, part in enumerate(parts[:-1]):
+            if part == "layers" and parts[idx + 1].isdigit():
+                return ".".join(parts[: idx + 1]), int(parts[idx + 1])
+        return None
+
+    def _select_lora_layers(
+        self,
+        train_layer_fraction: float,
+        layer_selection: Literal["first", "last"],
+    ) -> set[tuple[str, int]]:
+        if not 0.0 < train_layer_fraction <= 1.0:
+            raise ValueError(f"LoRA train layer fraction must be in (0, 1], got {train_layer_fraction}")
+        if layer_selection not in ("first", "last"):
+            raise ValueError(f"Invalid LoRA layer selection: {layer_selection}")
+
+        layer_groups: dict[str, set[int]] = {}
+        for module_name, module in self.smolvlm.named_modules():
+            if not isinstance(module, nn.Linear):
+                continue
+            layer_key = self._module_layer_key(module_name)
+            if layer_key is None:
+                continue
+            group_name, layer_idx = layer_key
+            layer_groups.setdefault(group_name, set()).add(layer_idx)
+
+        enabled_layers: set[tuple[str, int]] = set()
+        for group_name, layer_indices in layer_groups.items():
+            sorted_indices = sorted(layer_indices)
+            num_enabled = max(1, math.ceil(len(sorted_indices) * train_layer_fraction))
+            if layer_selection == "first":
+                selected = sorted_indices[:num_enabled]
+            else:
+                selected = sorted_indices[-num_enabled:]
+            enabled_layers.update((group_name, layer_idx) for layer_idx in selected)
+
+        return enabled_layers
+
     def train(self, mode: bool = True):
         super().train(mode)
-        self.smolvlm.eval()
+        # self.smolvlm.eval()
         return self
 
     def keep_trainable_params_float32_for_fp16(
@@ -40,7 +193,9 @@ class SmolVLMWithExpertModel(nn.Module):
         if precision not in ("float16", torch.float16):
             return
 
-        for param in self.action_expert.parameters():
+        for name, param in self.named_parameters():
+            if ".lora_A." in name or ".lora_B." in name:
+                continue
             if param.requires_grad:
                 param.data = param.data.to(dtype=torch.float32)
 

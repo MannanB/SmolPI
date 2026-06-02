@@ -196,7 +196,7 @@ class MujocoEnvironment:
                     data.ctrl[0] = float(torque_cmd[0])
                     data.ctrl[1] = float(torque_cmd[1])
 
-                    print(f"Env {env_idx}, Step {chunk_step * self.cfg.smolpi.action_horizon + ctrl_step}: Action: {torque_cmd}")
+                    # print(f"Env {env_idx}, Step {chunk_step * self.cfg.smolpi.action_horizon + ctrl_step}: Action: {torque_cmd}")
 
                 for i in range(steps_per_control):
                     for data in self.datas:
@@ -216,7 +216,7 @@ class MujocoEnvironment:
 
             for env_idx, (data, reward_model) in enumerate(zip(self.datas, reward_models, strict=True)):
                 reward = reward_model.update(data)
-                print(f"Env {env_idx}, Chunk {chunk_step}: Reward: {reward:.4f}")
+                # print(f"Env {env_idx}, Chunk {chunk_step}: Reward: {reward:.4f}")
                 samples.append(
                     {
                         "env_idx": env_idx,

@@ -338,22 +338,22 @@ SpinCCWRewardModel = SpinCounterClockwiseRewardModel
 SpinCWRewardModel = SpinClockwiseRewardModel
 
 OBJECTIVE_CLASSES = [
-    MoveForwardRewardModel,
-    MoveBackwardRewardModel,
-    SpinCounterClockwiseRewardModel,
-    SpinClockwiseRewardModel,
+    # MoveForwardRewardModel,
+    # MoveBackwardRewardModel,
+    # SpinCounterClockwiseRewardModel,
+    # SpinClockwiseRewardModel,
     MoveToRedPlatformRewardModel,
     MoveToGreenPlatformRewardModel,
     MoveToPinkPlatformRewardModel,
     MoveToBluePlatformRewardModel,
-    FaceRedPlatformRewardModel,
-    FaceGreenPlatformRewardModel,
-    FacePinkPlatformRewardModel,
-    FaceBluePlatformRewardModel,
-    MoveToCenterRewardModel,
-    MoveToAnyPlatformRewardModel,
-    OrbitPlatformsCounterClockwiseRewardModel,
-    OrbitPlatformsClockwiseRewardModel,
+    # FaceRedPlatformRewardModel,
+    # FaceGreenPlatformRewardModel,
+    # FacePinkPlatformRewardModel,
+    # FaceBluePlatformRewardModel,
+    # MoveToCenterRewardModel,
+    # MoveToAnyPlatformRewardModel,
+    # OrbitPlatformsCounterClockwiseRewardModel,
+    # OrbitPlatformsClockwiseRewardModel,
 ]
 
 

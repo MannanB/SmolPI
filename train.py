@@ -171,7 +171,7 @@ def DDPO_update(
 
     rewards = torch.tensor([s["reward"] for s in samples], dtype=torch.float32)
     advantages = compute_advantages(rewards)
-    total_samples = min(len(samples), 200)
+    total_samples = len(samples)#min(len(samples), 200)
 
     policy.train()
     optimizer.zero_grad(set_to_none=True)
@@ -223,7 +223,7 @@ def DDPO_update(
 
 def main():
     cfg = Config(
-        smolpi=SmolPIConfig(action_dim=2, action_horizon=5, precision=torch.float16)
+        smolpi=SmolPIConfig(action_dim=2, action_horizon=1, precision=torch.float16)
     )
     env = MujocoEnvironment(cfg)
 
@@ -256,9 +256,9 @@ def main():
                 )
             )
 
-            replay_buffer.add(all_samples)
-            train_samples = replay_buffer.shuffled_samples()
-            metrics = DDPO_update(policy, cfg, optimizer, train_samples)
+            # replay_buffer.add(all_samples)
+            # train_samples = replay_buffer.shuffled_samples()
+            metrics = DDPO_update(policy, cfg, optimizer, all_samples)
             mean_episode_return = float(np.mean(episode_returns))
             # print(
             #     f"update={update} samples={len(all_samples)} "
