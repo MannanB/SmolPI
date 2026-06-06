@@ -14,7 +14,7 @@ PLATFORM_TARGETS = {
 
 ROBOT_Z = 0.18
 PLATFORM_RADIUS = 0.35
-DEFAULT_RESET_HALF_EXTENT = 0.7
+DEFAULT_RESET_HALF_EXTENT = 1.4
 PLATFORM_RESET_HALF_EXTENT = 2.15
 
 
@@ -90,6 +90,9 @@ class RewardModel:
 
     def init_rollout(self, data):
         _reset_random_pose(data)
+
+    def has_completed_task(self, data) -> bool:
+        return False # optionally override for early termination of rollouts in synthetic data generation, not used for RL training
 
     def update(self, data):
         reward = 0.0
@@ -175,6 +178,9 @@ class MoveToPlatformRewardModel(RewardModel):
         )
         self.previous_distance = float(np.linalg.norm(_position(data) - self.target))
 
+    def has_completed_task(self, data) -> bool:
+        return float(np.linalg.norm(_position(data) - self.target)) <= PLATFORM_RADIUS / 1.3
+
     def update(self, data):
         distance = float(np.linalg.norm(_position(data) - self.target))
         progress_reward = self.previous_distance - distance
@@ -224,6 +230,9 @@ class FacePlatformRewardModel(RewardModel):
         self.start_pos = _position(data)
         self.previous_score = self._score(data)
 
+    def has_completed_task(self, data) -> bool:
+        return self._score(data) >= 0.99 # cos(acos(0.99)) = 0.99, so within ~8 degrees of facing the platform
+
     def _score(self, data) -> float:
         delta = self.target - _position(data)
         bearing = math.atan2(float(delta[1]), float(delta[0]))
@@ -238,6 +247,39 @@ class FacePlatformRewardModel(RewardModel):
         self.previous_score = score
         return reward
 
+class FaceTargetUntilInViewRewardModel(RewardModel): # ONLY FOR SYNTHETIC ROLLOUTS, NOT FOR RL
+    def __init__(self, cfg, target):
+        super().__init__(cfg)
+        self.target = target
+        self.previous_score = 0.0
+        self.start_pos = None
+        self.prompt = ""
+
+    def init_rollout(self, data):
+        self.start_pos = _position(data)
+        self.previous_score = self._score(data)
+
+    def _score(self, data) -> float:
+        delta = self.target - _position(data)
+        bearing = math.atan2(float(delta[1]), float(delta[0]))
+        error = abs(_wrap_angle(bearing - _yaw(data)))
+        return math.cos(error)
+    
+    def _in_view(self, data) -> bool:
+        delta = self.target - _position(data)
+        bearing = math.atan2(float(delta[1]), float(delta[0]))
+        error = abs(_wrap_angle(bearing - _yaw(data)))
+        return error < math.radians(30.0) # fov=70 degrees, so half fov is 35 degrees, add some tolerance for reward switching
+
+    def update(self, data):
+        score = self._score(data)
+        if self._in_view(data):
+            return 100.0 # large constant reward, signal for synethetic rollouts to switch to moving to platform
+        reward = score - self.previous_score
+        reward += 0.05 * max(score, 0.0)
+        reward -= 0.005 * float(np.linalg.norm(_position(data) - self.start_pos))
+        self.previous_score = score
+        return reward
 
 class FaceRedPlatformRewardModel(FacePlatformRewardModel):
     def __init__(self, cfg):
@@ -269,6 +311,9 @@ class MoveToCenterRewardModel(RewardModel):
     def init_rollout(self, data):
         _reset_random_pose(data, half_extent=PLATFORM_RESET_HALF_EXTENT, min_distance_from=self.target, min_distance=0.8)
         self.previous_distance = float(np.linalg.norm(_position(data) - self.target))
+
+    def has_completed_task(self, data) -> bool:
+        return float(np.linalg.norm(_position(data) - self.target)) <= 0.3
 
     def update(self, data):
         distance = float(np.linalg.norm(_position(data) - self.target))
@@ -338,19 +383,19 @@ SpinCCWRewardModel = SpinCounterClockwiseRewardModel
 SpinCWRewardModel = SpinClockwiseRewardModel
 
 OBJECTIVE_CLASSES = [
-    # MoveForwardRewardModel,
-    # MoveBackwardRewardModel,
-    # SpinCounterClockwiseRewardModel,
-    # SpinClockwiseRewardModel,
+    MoveForwardRewardModel,
+    MoveBackwardRewardModel,
+    SpinCounterClockwiseRewardModel,
+    SpinClockwiseRewardModel,
     MoveToRedPlatformRewardModel,
     MoveToGreenPlatformRewardModel,
     MoveToPinkPlatformRewardModel,
     MoveToBluePlatformRewardModel,
-    # FaceRedPlatformRewardModel,
-    # FaceGreenPlatformRewardModel,
-    # FacePinkPlatformRewardModel,
-    # FaceBluePlatformRewardModel,
-    # MoveToCenterRewardModel,
+    FaceRedPlatformRewardModel,
+    FaceGreenPlatformRewardModel,
+    FacePinkPlatformRewardModel,
+    FaceBluePlatformRewardModel,
+    MoveToCenterRewardModel,
     # MoveToAnyPlatformRewardModel,
     # OrbitPlatformsCounterClockwiseRewardModel,
     # OrbitPlatformsClockwiseRewardModel,

@@ -1,7 +1,9 @@
 from contextlib import nullcontext
 import os
+from xml.parsers.expat import model
 
 import cv2
+import copy
 
 from transformers import AutoTokenizer
 from model.smolpi import Observation, SmolPI
@@ -96,6 +98,40 @@ class MujocoEnvironment:
     def get_wheel_speed_state(self, env_idx: int) -> np.ndarray:
         data = self.datas[env_idx]
         return np.array([data.qvel[self.left_dof], data.qvel[self.right_dof]], dtype=np.float32)
+    
+    def copy_sim_state(self, env_idx: int) -> mujoco.MjData:
+        source = self.datas[env_idx]
+        data = mujoco.MjData(self.model)
+        data.time = source.time
+        data.qpos[:] = source.qpos
+        data.qvel[:] = source.qvel
+        data.act[:] = source.act
+        data.ctrl[:] = source.ctrl
+        data.qacc_warmstart[:] = source.qacc_warmstart
+        mujoco.mj_forward(self.model, data)
+        return data
+
+
+    def score_candidate(
+        self,
+        reward_model: RewardModel,
+        action: np.ndarray,
+        steps_per_control: int,
+        env_idx: int
+    ) -> float:
+        candidate_data = self.copy_sim_state(env_idx)
+        candidate_reward_model = copy.deepcopy(reward_model)
+        candidate_data.ctrl[0] = float(action[0])
+        candidate_data.ctrl[1] = float(action[1])
+        for _ in range(steps_per_control):
+            mujoco.mj_step(self.model, candidate_data)
+        reward = float(candidate_reward_model.update(candidate_data))
+
+        del candidate_data
+        del candidate_reward_model
+            
+        return reward
+
 
     def make_observations(
         self,
@@ -139,6 +175,7 @@ class MujocoEnvironment:
         env_idx: int = 0,
     ) -> Observation:
         return self.make_observations(policy, [prompt], device, [env_idx])
+    
 
     def rollout(
         self,

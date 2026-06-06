@@ -112,6 +112,7 @@ class SmolPIConfig(BaseModel):
         "k_proj",
         "v_proj",
         "o_proj",
+        "out_proj",
         "gate_proj",
         "up_proj",
         "down_proj",
@@ -165,7 +166,7 @@ class SmolPI(nn.Module):
         self.gradient_checkpointing_enable()
 
         torch.set_float32_matmul_precision("high")
-        self.sample_actions = torch.compile(self.sample_actions, dynamic=False)
+        # self.sample_actions = torch.compile(self.sample_actions, dynamic=False)
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
@@ -219,6 +220,7 @@ class SmolPI(nn.Module):
         # print(images[0].shape, img_masks[0].shape, lang_tokens.shape, lang_masks.shape, len(images), len(img_masks))
 
         # Process images
+        # print(img_masks[0].shape)
         for img, img_mask in zip(images, img_masks, strict=True):
 
             def image_embed_func(img):
@@ -231,6 +233,7 @@ class SmolPI(nn.Module):
                 img_mask = img_mask.unsqueeze(0)
 
             embs.append(img_emb)
+            # print(img_mask.shape)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
 
             # Create attention masks so that image tokens attend to each other
@@ -330,7 +333,6 @@ class SmolPI(nn.Module):
     def forward(self, observation, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
-
         if noise is None:
             noise = sample_noise(actions.shape, actions.device)
 
@@ -379,7 +381,6 @@ class SmolPI(nn.Module):
             return self.action_out_proj(suffix_out)
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
-
         return F.mse_loss(u_t, v_t, reduction="none")
 
     def denoise_step_from_observation(self, observation, noisy_actions, timestep) -> Tensor:

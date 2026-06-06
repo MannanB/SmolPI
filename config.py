@@ -30,19 +30,30 @@ class Config(BaseModel):
     cam_sim_output_path: str = "vids/front_cam_vla_rollout.mp4"
     cam_omni_output_path: str = "vids/omniscient_vla_rollout.mp4"
 
-    sim_duration_sec: int = 10
-    control_freq_hz: int = 10
-    num_episodes_per_update: int = 20
-    num_parallel_rollouts: int = 20
-    num_updates: int = 1000
-    batch_size: int = 20
-    replay_buffer_capacity: int = 1000
+    sim_duration_sec: int = 6
+    control_freq_hz: int = 20
 
-    flow_steps: int = 5
-    flow_std: float = 0.1
-    kl_coef: float = 0.2
+    # RL specific configs
+    num_episodes_per_update: int = 5
+    num_parallel_rollouts: int = 5
+    num_updates_rl: int = 1000
+    batch_size_rl: int = 40
+    replay_buffer_capacity_rl: int = 1000
+    lr_rl: float = 3e-5
+    weight_decay_rl: float = 1e-4
 
-    lr: float = 1e-5
+    # model hyper params
+    flow_steps: int = 8
+    flow_std: float = 0.05
+    kl_coef: float = 0.05
+
+    # sft specific configs
+    epochs: int = 1
+    lr: float = 1e-4
+    batch_size: int = 8
+    grad_accum_steps: int = 8
     weight_decay: float = 1e-4
+    use_8bit_adam_sft: bool = True
+
 
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

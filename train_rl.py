@@ -170,6 +170,7 @@ def DDPO_update(
         raise ValueError("DDPO_update requires at least one sample")
 
     rewards = torch.tensor([s["reward"] for s in samples], dtype=torch.float32)
+    print(f"reward stats: mean={rewards.mean().item():.4f} std={rewards.std(unbiased=False).item():.4f} min={rewards.min().item():.4f} max={rewards.max().item():.4f}")
     advantages = compute_advantages(rewards)
     total_samples = len(samples)#min(len(samples), 200)
 
@@ -182,7 +183,7 @@ def DDPO_update(
     advantage_sum = 0.0
     num_minibatches = 0
 
-    for start in range(0, total_samples, cfg.batch_size):
+    for start in tqdm(range(0, total_samples, cfg.batch_size), desc="DDPO Minibatches", unit="minibatch", leave=False):
         end = min(start + cfg.batch_size, total_samples)
         batch_size = end - start
         weight = batch_size / total_samples
@@ -228,11 +229,14 @@ def main():
     env = MujocoEnvironment(cfg)
 
     policy = SmolPI(cfg.smolpi).to(cfg.device)
-    optimizer = torch.optim.AdamW((p for p in policy.parameters() if p.requires_grad), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    # load from sft
+    checkpoint = torch.load("./smolpi_sft_final.pth", map_location=cfg.device)
+    policy.load_state_dict(checkpoint)
+    optimizer = torch.optim.AdamW((p for p in policy.parameters() if p.requires_grad), lr=cfg.lr_rl, weight_decay=cfg.weight_decay_rl)
     policy.eval()
 
-    update_pbar = tqdm(range(cfg.num_updates), desc="DDPO Updates", unit="update")
-    replay_buffer = ReplayBuffer(cfg.replay_buffer_capacity)
+    update_pbar = tqdm(range(cfg.num_updates_rl), desc="DDPO Updates", unit="update")
+    replay_buffer = ReplayBuffer(cfg.replay_buffer_capacity_rl)
 
     past_metrics = []
 
