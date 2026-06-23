@@ -25,10 +25,11 @@ import pickle
 
 with open("sft_training_metrics.pkl", "rb") as f:
     metrics = pickle.load(f)
-
+print(metrics)
 loss = metrics["loss"]
 # moving average over loss with window of 64
-loss = [sum(loss[max(0, i-64):i+1])/(i - max(0, i-64) + 1) for i in range(len(loss))]
+wnd = 32*8
+loss = [sum(loss[max(0, i-wnd):i+1])/(i - max(0, i-wnd) + 1) for i in range(len(loss))]
 avg_returns = {k: v for k, v in metrics.items() if k != "loss"}
 
 # two side by side plots

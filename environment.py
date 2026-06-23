@@ -1,11 +1,14 @@
-from contextlib import nullcontext
 import os
-from xml.parsers.expat import model
+
+os.environ.setdefault("MUJOCO_GL", "glfw")
+
+from contextlib import nullcontext
+import math
 
 import cv2
 import copy
 
-from transformers import AutoTokenizer
+from transformers import AutoProcessor
 from model.smolpi import Observation, SmolPI
 
 import mujoco
@@ -14,8 +17,6 @@ import numpy as np
 
 from config import Config
 from objectives import RewardModel
-
-os.environ.setdefault("MUJOCO_GL", "glfw")
     
 
 def make_writer(path, width, height, fps):
@@ -34,18 +35,23 @@ def get_vision_input_shape(policy: SmolPI) -> tuple[int, int, int]:
         h, w = int(image_size[0]), int(image_size[1])
     else:
         h = w = int(image_size)
-    return channels, h, w
+    return h, w
 
 def frame_to_tensor(rgb_frame: np.ndarray, height: int, width: int, device: torch.device) -> torch.Tensor:
     resized = cv2.resize(rgb_frame, (width, height), interpolation=cv2.INTER_AREA)
     frame = torch.from_numpy(resized).to(device=device, dtype=torch.float32) / 255.0
+    frame = (frame - 0.5) / 0.5
     frame = frame.permute(2, 0, 1).contiguous()
     return frame.unsqueeze(0)
 
-class MujocoEnvironment:
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
+def yaw_to_quat(yaw: float) -> np.ndarray:
+    half_yaw = 0.5 * yaw
+    return np.array([math.cos(half_yaw), 0.0, 0.0, math.sin(half_yaw)], dtype=np.float64)
 
+class MujocoEnvironment:
+    def __init__(self, cfg: Config, obs_width: int, obs_height: int):
+        self.cfg = cfg
+        
         xml_str = ""
         with open(cfg.world_xml_path, "r") as f:
             xml_str = f.read()
@@ -54,6 +60,9 @@ class MujocoEnvironment:
         self.datas = [mujoco.MjData(self.model) for _ in range(cfg.num_parallel_rollouts)]
 
         self.reset_episode()
+
+        self.obs_width = obs_width
+        self.obs_height = obs_height
 
         left_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "left_wheel_joint")
         right_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "right_wheel_joint")
@@ -66,7 +75,8 @@ class MujocoEnvironment:
         self.cam_video = make_writer(cfg.cam_sim_output_path, cfg.cam_sim_width, cfg.cam_sim_height, cfg.cam_sim_fps)
         self.omni_cam_video = make_writer(cfg.cam_omni_output_path, cfg.cam_omni_width, cfg.cam_omni_height, cfg.cam_omni_fps)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(cfg.smolpi.smolvlm_id)
+        self.processor = AutoProcessor.from_pretrained(cfg.smolpi.smolvlm_id)
+        self.tokenizer = self.processor.tokenizer
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -77,7 +87,11 @@ class MujocoEnvironment:
                 data.qpos[0] = np.random.uniform(-0.5, 0.5)
                 data.qpos[1] = np.random.uniform(-0.5, 0.5)
             if randomize_rotation:
-                data.qpos[2] = np.random.uniform(-np.pi, np.pi)
+                yaw = float(np.random.uniform(-np.pi, np.pi))
+                if data.qpos.shape[0] >= 7:
+                    data.qpos[3:7] = yaw_to_quat(yaw)
+                elif data.qpos.shape[0] >= 3:
+                    data.qpos[2] = yaw
             mujoco.mj_forward(self.model, data)
 
     def reset_episode_via_reward_model(self, reward_models: list[RewardModel]):
@@ -135,7 +149,6 @@ class MujocoEnvironment:
 
     def make_observations(
         self,
-        policy: SmolPI,
         prompts: list[str],
         device: torch.device,
         env_indices: list[int] | None = None,
@@ -145,7 +158,7 @@ class MujocoEnvironment:
         if len(prompts) != len(env_indices):
             raise ValueError(f"got {len(prompts)} prompts for {len(env_indices)} environment indices")
 
-        _, h, w = get_vision_input_shape(policy)
+        h, w = self.obs_height, self.obs_width
         images = []
         states = []
         for env_idx in env_indices:
@@ -153,7 +166,15 @@ class MujocoEnvironment:
             images.append(frame_to_tensor(rgb_frame, h, w, device))
             states.append(torch.as_tensor(self.get_wheel_speed_state(env_idx), device=device, dtype=torch.float32))
 
-        tokens = self.tokenizer(prompts, return_tensors="pt", truncation=True, padding=True)
+        formatted_prompts = [
+            self.processor.apply_chat_template(
+                [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            for prompt in prompts
+        ]
+        tokens = self.tokenizer(formatted_prompts, return_tensors="pt", truncation=True, padding=True)
         input_ids = tokens["input_ids"].to(device=device, dtype=torch.long)
         attention_mask = tokens["attention_mask"].to(device=device, dtype=torch.bool)
         image_batch = torch.cat(images, dim=0)
@@ -169,12 +190,11 @@ class MujocoEnvironment:
 
     def make_observation(
         self,
-        policy: SmolPI,
         prompt: str,
         device: torch.device,
         env_idx: int = 0,
     ) -> Observation:
-        return self.make_observations(policy, [prompt], device, [env_idx])
+        return self.make_observations([prompt], device, [env_idx])
     
 
     def rollout(
@@ -205,7 +225,6 @@ class MujocoEnvironment:
 
         for chunk_step in range(num_chunks):
             observation = self.make_observations(
-                policy,
                 [reward_model.prompt for reward_model in reward_models],
                 self.cfg.device,
             )

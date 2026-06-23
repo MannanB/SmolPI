@@ -3,9 +3,9 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 from model.smolpi import SmolPI, Observation, SmolPIConfig
-from environment import MujocoEnvironment
+from environment import MujocoEnvironment, get_vision_input_shape
 from contextlib import nullcontext
-from objectives import make_random_objective
+from objectives import OBJECTIVE_CLASSES
 from config import Config
 
 
@@ -68,11 +68,23 @@ def stack_rollout_batch(samples: list[dict], device: torch.device) -> tuple[Obse
     return obs, actions, rewards
 
 
-def compute_advantages(rewards: torch.Tensor) -> torch.Tensor:
-    advantages = rewards - rewards.mean()
-    reward_std = rewards.std(unbiased=False)
-    if torch.isfinite(reward_std) and reward_std > 1e-6:
-        advantages = advantages / (reward_std + 1e-6)
+def compute_return_advantages(samples: list[dict], gamma: float) -> torch.Tensor:
+    returns = torch.zeros(len(samples), dtype=torch.float32)
+    trajectory_indices: dict[tuple[int, int], list[int]] = {}
+    for idx, sample in enumerate(samples):
+        key = (int(sample.get("episode_idx", 0)), int(sample["env_idx"]))
+        trajectory_indices.setdefault(key, []).append(idx)
+
+    for indices in trajectory_indices.values():
+        running_return = 0.0
+        for idx in reversed(indices):
+            running_return = float(samples[idx]["reward"]) + gamma * running_return
+            returns[idx] = running_return
+
+    advantages = returns - returns.mean()
+    returns_std = returns.std(unbiased=False)
+    if torch.isfinite(returns_std) and returns_std > 1e-6:
+        advantages = advantages / (returns_std + 1e-6)
     return advantages.clamp(-5.0, 5.0).detach()
 
 
@@ -170,8 +182,12 @@ def DDPO_update(
         raise ValueError("DDPO_update requires at least one sample")
 
     rewards = torch.tensor([s["reward"] for s in samples], dtype=torch.float32)
-    print(f"reward stats: mean={rewards.mean().item():.4f} std={rewards.std(unbiased=False).item():.4f} min={rewards.min().item():.4f} max={rewards.max().item():.4f}")
-    advantages = compute_advantages(rewards)
+    advantages = compute_return_advantages(samples, cfg.gamma_rl)
+    print(
+        f"reward stats: mean={rewards.mean().item():.4f} std={rewards.std(unbiased=False).item():.4f} "
+        f"min={rewards.min().item():.4f} max={rewards.max().item():.4f} "
+        f"adv_std={advantages.std(unbiased=False).item():.4f}"
+    )
     total_samples = len(samples)#min(len(samples), 200)
 
     policy.train()
@@ -183,8 +199,8 @@ def DDPO_update(
     advantage_sum = 0.0
     num_minibatches = 0
 
-    for start in tqdm(range(0, total_samples, cfg.batch_size), desc="DDPO Minibatches", unit="minibatch", leave=False):
-        end = min(start + cfg.batch_size, total_samples)
+    for start in tqdm(range(0, total_samples, cfg.batch_size_rl), desc="DDPO Minibatches", unit="minibatch", leave=False):
+        end = min(start + cfg.batch_size_rl, total_samples)
         batch_size = end - start
         weight = batch_size / total_samples
 
@@ -224,11 +240,14 @@ def DDPO_update(
 
 def main():
     cfg = Config(
-        smolpi=SmolPIConfig(action_dim=2, action_horizon=1, precision=torch.float16)
+        smolpi=SmolPIConfig(action_dim=2, action_horizon=5, precision=torch.float16)
     )
-    env = MujocoEnvironment(cfg)
+    cfg.flow_std = cfg.flow_std_rl
 
     policy = SmolPI(cfg.smolpi).to(cfg.device)
+
+    env = MujocoEnvironment(cfg, *get_vision_input_shape(policy))
+
     # load from sft
     checkpoint = torch.load("./smolpi_sft_final.pth", map_location=cfg.device)
     policy.load_state_dict(checkpoint)
@@ -242,18 +261,26 @@ def main():
 
     try:
         for update in update_pbar:
-            objectives = [make_random_objective(cfg) for _ in range(cfg.num_parallel_rollouts)]
-            all_samples = env.rollout(
-                policy=policy,
-                reward_models=objectives,
-                write_to_video=True,
-            )
-            episode_returns = [
-                sum(s["reward"] for s in all_samples if s["env_idx"] == env_idx)
-                for env_idx in range(cfg.num_parallel_rollouts)
-            ]
+            all_samples = []
+            episode_returns = []
+            for episode_idx in range(cfg.num_episodes_per_update):
+                obj_cls = [np.random.choice(OBJECTIVE_CLASSES)(cfg) for _ in range(cfg.num_parallel_rollouts)]
+                episode_samples = env.rollout(
+                    policy=policy,
+                    reward_models=obj_cls,
+                    write_to_video=True,
+                )
+                for i, sample in enumerate(episode_samples):
+                    sample["episode_idx"] = episode_idx
+                    # sample["objective_name"] = obj_cls[i].__name__
+                all_samples.extend(episode_samples)
+                episode_returns.extend(
+                    sum(s["reward"] for s in episode_samples if s["env_idx"] == env_idx)
+                    for env_idx in range(cfg.num_parallel_rollouts)
+                )
             tqdm.write(
-                "collected {} parallel rollouts with {} samples and mean episode return {:.4f}".format(
+                "collected {} x {} rollouts with {} samples and mean episode return {:.4f}".format(
+                    cfg.num_episodes_per_update,
                     cfg.num_parallel_rollouts,
                     len(all_samples),
                     float(np.mean(episode_returns)),
