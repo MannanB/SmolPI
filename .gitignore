@@ -1,7 +1,11 @@
 vids/
+data/
+out/
+
 *.pkl
 *.pt
 *.pth
+*.pyc
 
 __pycache__
-*.pyc
+.vscode
