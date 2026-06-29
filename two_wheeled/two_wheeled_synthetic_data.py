@@ -1,13 +1,13 @@
 import torch
 import tqdm 
-from config import Config
+from two_wheeled.config import Config
 from environment import MujocoEnvironment, get_vision_input_shape
 
 import mujoco
 import numpy as np
 
 from model.smolpi import SmolPI, SmolPIConfig
-from objectives import *
+from two_wheeled.objectives import *
 
 import os
 import glob

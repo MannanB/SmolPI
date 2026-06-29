@@ -1,3 +1,5 @@
+# TODO: generalize out of two wheeled
+
 import os
 
 os.environ.setdefault("MUJOCO_GL", "glfw")
@@ -15,8 +17,8 @@ import mujoco
 import torch
 import numpy as np
 
-from config import Config
-from objectives import RewardModel
+from two_wheeled.config import Config
+from two_wheeled.objectives import RewardModel
     
 
 def make_writer(path, width, height, fps):

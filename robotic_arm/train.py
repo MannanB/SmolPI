@@ -7,7 +7,7 @@ import tqdm
 from transformers import AutoProcessor
 from environment import MujocoEnvironment, get_vision_input_shape
 from model.smolpi import SmolPI, Observation, SmolPIConfig
-from config import Config
+from two_wheeled.config import Config
 import os, pickle
 
 def normalize_image_batch(images: torch.Tensor) -> torch.Tensor:
@@ -123,7 +123,7 @@ def action_from_red(image, center_threshold=0.15, min_red_pixels=100):
     return torch.tensor([[0.0, 0.0]], dtype=torch.float32), red_mask
 
 
-from objectives import *
+from two_wheeled.objectives import *
 EVAL_OBJECTIVES = [FaceRedPlatformRewardModel, MoveForwardRewardModel, MoveToGreenPlatformRewardModel]
 
 def main():

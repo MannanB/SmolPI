@@ -5,8 +5,8 @@ from tqdm import tqdm
 from model.smolpi import SmolPI, Observation, SmolPIConfig
 from environment import MujocoEnvironment, get_vision_input_shape
 from contextlib import nullcontext
-from objectives import *
-from config import Config
+from two_wheeled.objectives import *
+from two_wheeled.config import Config
 
 OBJECTIVE = MoveToBluePlatformRewardModel
 

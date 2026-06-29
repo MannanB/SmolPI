@@ -13,7 +13,7 @@ import mujoco
 import numpy as np
 import torch
 
-from config import Config
+from two_wheeled.config import Config
 from environment import MujocoEnvironment, get_vision_input_shape
 from model.smolpi import SmolPI, SmolPIConfig
 
