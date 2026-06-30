@@ -2,18 +2,6 @@ from pydantic import BaseModel, ConfigDict
 import torch
 from model.smolpi import SmolPIConfig
 
-# PROMPT = "Drive forward"
-# CAM_SIM_WIDTH, CAM_SIM_HEIGHT = 640, 480
-# CAM_OMNI_WIDTH, CAM_OMNI_HEIGHT = 1280, 960
-# CAM_SIM_FPS = 30
-# CAM_OMNI_FPS = 60
-# SIM_DURATION_SEC = 4
-# CONTROL_FREQ_HZ = 25 # Control frequency for the policy (e.g., 10 Hz means the policy outputs new actions every 0.1 seconds).
-# NUM_EPISODES_PER_UPDATE = 2 # Number of parallel episodes to run for each policy update (if doing training).
-# REWARD_SCALE = 0.5
-# NUM_UPDATES = 1000
-# KL_COEF = 0.02
-
 
 class Config(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)

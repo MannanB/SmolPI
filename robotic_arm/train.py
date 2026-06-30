@@ -1,239 +1,218 @@
-from contextlib import nullcontext
+from __future__ import annotations
 
-import numpy as np
+import argparse
+from contextlib import nullcontext
+import pickle
+from pathlib import Path
+import sys
+from typing import Any
+
 import torch
-from torch.nn.utils.rnn import pad_sequence
 import tqdm
 from transformers import AutoProcessor
-from environment import MujocoEnvironment, get_vision_input_shape
-from model.smolpi import SmolPI, Observation, SmolPIConfig
-from two_wheeled.config import Config
-import os, pickle
+
+# Support both `python -m robotic_arm.train` and `python robotic_arm/train.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from model.smolpi import Observation, SmolPI, SmolPIConfig
+from robotic_arm.config import Config
+
+
+BRIDGE_IMAGE_KEYS = ("image_0", "image_1", "image_2", "image_3")
+
 
 def normalize_image_batch(images: torch.Tensor) -> torch.Tensor:
-    if images.numel() > 0 and float(images.min()) >= 0.0 and float(images.max()) <= 1.0:
-        return (images - 0.5) / 0.5
+    images = images.to(dtype=torch.float32)
+    if images.numel() == 0:
+        return images
+    if float(images.max()) > 1.0:
+        images = images / 255.0
+    if float(images.min()) >= 0.0:
+        images = (images - 0.5) / 0.5
     return images
 
-def prompt_tokens_for_observation(observation: Observation, processor) -> tuple[torch.Tensor, torch.Tensor]:
-    tokenizer = processor.tokenizer
-    token_ids = observation.tokenized_prompt.squeeze(0).detach().cpu().to(dtype=torch.long)
-    token_mask = observation.tokenized_prompt_mask.squeeze(0).detach().cpu().to(dtype=torch.bool)
-    valid_ids = token_ids[token_mask] if token_mask.shape == token_ids.shape else token_ids
 
-    image_token_id = tokenizer.convert_tokens_to_ids("<image>")
-    already_formatted = valid_ids.numel() > 0 and (
-        int(valid_ids[0]) == tokenizer.bos_token_id or image_token_id in valid_ids.tolist()
-    )
-    if already_formatted:
-        return valid_ids, torch.ones_like(valid_ids, dtype=torch.bool)
-
-    prompt = tokenizer.decode(valid_ids, skip_special_tokens=True).strip()
-    formatted_prompt = processor.apply_chat_template(
-        [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-    tokens = tokenizer(formatted_prompt, return_tensors="pt", truncation=True)
-    return tokens["input_ids"].squeeze(0), tokens["attention_mask"].squeeze(0).to(dtype=torch.bool)
-
-def stack_observations(observations: list[Observation], device: torch.device, processor) -> tuple[Observation, dict[str, torch.Tensor], torch.Tensor]:
-    # print([obs.images["front"].shape for obs in observations])
-    # print([obs.image_masks["front"].shape for obs in observations])
-
-    images = torch.stack([s.images["front"] for s in observations], dim=0).squeeze(1).to(device=device, dtype=torch.float32)
-    images = normalize_image_batch(images)
-    image_masks = torch.stack([s.image_masks["front"] for s in observations], dim=0).squeeze(1).to(device=device, dtype=torch.bool)
-    prompt_tokens = [prompt_tokens_for_observation(s, processor) for s in observations]
-    tokenized_prompt = pad_sequence(
-        [tokens for tokens, _ in prompt_tokens],
-        batch_first=True,
-        padding_value=0,
-    ).to(device=device, dtype=torch.long)
-    tokenized_prompt_mask = pad_sequence(
-        [mask for _, mask in prompt_tokens],
-        batch_first=True,
-        padding_value=False,
-    ).to(device=device, dtype=torch.bool)
-    state = torch.stack([s.state for s in observations], dim=0).squeeze(1).to(device=device, dtype=torch.float32)
-
-    obs = Observation(
-        images={"front": images},
-        image_masks={"front": image_masks},
-        tokenized_prompt=tokenized_prompt,
-        tokenized_prompt_mask=tokenized_prompt_mask,
-        state=state,
+def _format_bridge_prompts(instructions: Any, processor: Any) -> dict[str, torch.Tensor]:
+    prompts = []
+    for instruction in instructions:
+        if isinstance(instruction, bytes):
+            instruction = instruction.decode("utf-8")
+        instruction = str(instruction).strip()
+        prompts.append(
+            processor.apply_chat_template(
+                [{"role": "user", "content": [{"type": "text", "text": instruction}]}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        )
+    return processor.tokenizer(
+        prompts, padding=True, truncation=True, return_tensors="pt"
     )
 
-    # print(obs.images["front"].shape, obs.image_masks["front"].shape, obs.tokenized_prompt.shape, obs.tokenized_prompt_mask.shape, obs.state.shape)
 
-    return obs
+def bridge_batch_to_torch(
+    batch: dict[str, Any], device: torch.device, processor: Any
+) -> tuple[Observation, torch.Tensor]:
+    """Convert one already-batched RLDS result to the SmolPI batch layout."""
+    images: dict[str, torch.Tensor] = {}
+    image_masks: dict[str, torch.Tensor] = {}
+    all_image_masks = []
+    batch_size = len(batch["language_instruction"])
 
-def action_from_red(image, center_threshold=0.15, min_red_pixels=100):
-    """
-    image: [3, H, W] RGB tensor, either 0–1 or 0–255.
+    for key in BRIDGE_IMAGE_KEYS:
+        image = torch.tensor(batch[key])
+        if image.ndim != 4 or image.shape[-1] != 3:
+            raise ValueError(f"Bridge {key} must be BHWC RGB, got {tuple(image.shape)}")
+        valid = image.reshape(batch_size, -1).ne(0).any(dim=1)
+        all_image_masks.append(valid)
+        if not valid.any():
+            # Avoid running the vision tower for a dummy camera absent from
+            # every observation in this batch.
+            continue
+        images[key] = normalize_image_batch(image.permute(0, 3, 1, 2).contiguous()).to(
+            device=device, non_blocking=True
+        )
+        image_masks[key] = valid.to(device=device, dtype=torch.bool, non_blocking=True)
 
-    Returns:
-        [0, 0]   if red is near the center
-        [2, -2]  if red is left of center
-        [-2, 2]  if red is right of center or missing
-    """
-    image = torch.as_tensor(image, dtype=torch.float32)
+    if not torch.stack(all_image_masks, dim=1).any(dim=1).all():
+        raise ValueError("A Bridge observation has no valid camera images")
 
-    # Remove an optional leading dimension: [1, 3, H, W] -> [3, H, W]
-    if image.ndim == 4:
-        image = image.squeeze(0)
-
-    # Normalize 0–255 images to 0–1
-    if image.max() > 1.5:
-        image = image / 255.0
-
-    r, g, b = image[0], image[1], image[2]
-
-    # Red detection:
-    # - allows darker red caused by shadows
-    # - requires red to dominate green and blue
-    # - avoids most pink/white regions
-    red_mask = (
-        (r > 0.18)
-        & (r > g * 1.35)
-        & (r > b * 1.35)
-        & ((r - g) > 0.08)
-        & ((r - b) > 0.08)
+    tokens = _format_bridge_prompts(batch["language_instruction"], processor)
+    observation = Observation(
+        images=images,
+        image_masks=image_masks,
+        tokenized_prompt=tokens["input_ids"].to(device=device, dtype=torch.long),
+        tokenized_prompt_mask=tokens["attention_mask"].to(device=device, dtype=torch.bool),
+        state=torch.tensor(batch["state"], device=device, dtype=torch.float32),
     )
-
-    red_locations = torch.nonzero(red_mask, as_tuple=False)
-
-    if red_locations.shape[0] < min_red_pixels:
-        return torch.tensor([[-2.0, 2.0]], dtype=torch.float32), red_mask
-
-    # red_locations columns are [y, x]
-    red_center_x = red_locations[:, 1].float().mean()
-    image_center_x = image.shape[2] / 2
-
-    # Fraction of image width considered "middle-ish"
-    threshold_pixels = image.shape[2] * center_threshold
-
-    if red_center_x < image_center_x - threshold_pixels:
-        return torch.tensor([[-2.0, 2.0]], dtype=torch.float32), red_mask
-
-    if red_center_x > image_center_x + threshold_pixels:
-        return torch.tensor([[2.0, -2.0]], dtype=torch.float32), red_mask
-
-    return torch.tensor([[0.0, 0.0]], dtype=torch.float32), red_mask
+    actions = torch.tensor(batch["actions"], device=device, dtype=torch.float32)
+    return observation, actions
 
 
-from two_wheeled.objectives import *
-EVAL_OBJECTIVES = [FaceRedPlatformRewardModel, MoveForwardRewardModel, MoveToGreenPlatformRewardModel]
+def build_bridge_dataset(
+    dataset_path: Path,
+    *,
+    split: str,
+    action_horizon: int,
+    batch_size: int,
+    shuffle_buffer: int,
+):
+    """Build batched observation/future-action windows from Bridge episodes."""
+    import tensorflow as tf
+    import tensorflow_datasets as tfds
 
-def main():
+    builder = tfds.builder_from_directory(dataset_path)
+    episodes = builder.as_dataset(split=split, shuffle_files=True)
+
+    def episode_to_windows(episode):
+        steps = episode["steps"]
+        action_windows = (
+            steps.map(
+                lambda step: step["action"],
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+            .window(action_horizon, shift=1, drop_remainder=True)
+            .flat_map(lambda window: window.batch(action_horizon, drop_remainder=True))
+        )
+
+        def make_transition(step, actions):
+            observation = step["observation"]
+            return {
+                **{key: observation[key] for key in BRIDGE_IMAGE_KEYS},
+                "state": observation["state"],
+                "language_instruction": step["language_instruction"],
+                "actions": actions,
+            }
+        return tf.data.Dataset.zip((steps, action_windows)).map(
+            make_transition, num_parallel_calls=tf.data.AUTOTUNE
+        )
+
+    transitions = episodes.interleave(
+        episode_to_windows,
+        cycle_length=8,
+        num_parallel_calls=tf.data.AUTOTUNE,
+        deterministic=False,
+    )
+    if shuffle_buffer > 0:
+        transitions = transitions.shuffle(shuffle_buffer, reshuffle_each_iteration=True)
+    return transitions.batch(batch_size, drop_remainder=False).prefetch(tf.data.AUTOTUNE)
+
+
+def main() -> None:
+    precision = torch.float16 if torch.cuda.is_available() else torch.float32
     cfg = Config(
-        smolpi=SmolPIConfig(action_dim=2, action_horizon=5, precision=torch.float16),
-        cam_sim_output_path="vids/sft_eval_sim.mp4",
-        cam_omni_output_path="vids/sft_eval_omni.mp4",
+        smolpi=SmolPIConfig(action_dim=7, action_horizon=1, precision=precision),
     )
-
     policy = SmolPI(cfg.smolpi).to(cfg.device)
-    trainable_params = (p for p in policy.parameters() if p.requires_grad)
-    if cfg.use_8bit_adam_sft:
+    trainable_params = (parameter for parameter in policy.parameters() if parameter.requires_grad)
+    if cfg.use_8bit_adam:
         import bitsandbytes as bnb
-        optimizer = bnb.optim.AdamW8bit(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
+
+        optimizer = bnb.optim.AdamW8bit(
+            trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay
+        )
     else:
-        optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-    optimizer.zero_grad()
+        optimizer = torch.optim.AdamW(
+            trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay
+        )
+    optimizer.zero_grad(set_to_none=True)
 
-    env = MujocoEnvironment(cfg, *get_vision_input_shape(policy))
-
-    policy.train()
     processor = AutoProcessor.from_pretrained(cfg.smolpi.smolvlm_id)
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
-    data_files = os.listdir("./data/shuffled_chunks/")
-    # data_files = [f for f in data_files if f.startswith("synthetic_samples_shuffled_") and f.endswith(".pkl")]
-    # data_files = ["synthetic_samples_FaceRedPlatformRewardModel.pkl"]
-    
-    if cfg.device.type != "cpu" and cfg.smolpi.precision in (torch.float16, torch.bfloat16):
-        amp_ctx = torch.autocast(device_type=cfg.device.type, dtype=cfg.smolpi.precision)
-    else:
-        amp_ctx = nullcontext()
+    dataset = build_bridge_dataset(
+        cfg.dataset,
+        split=cfg.split,
+        action_horizon=cfg.smolpi.action_horizon,
+        batch_size=cfg.batch_size,
+        shuffle_buffer=cfg.shuffle_buffer,
+    )
+    amp_context = (
+        lambda: torch.autocast(device_type=cfg.device.type, dtype=cfg.smolpi.precision)
+        if cfg.device.type != "cpu"
+        else nullcontext()
+    )
 
-    metrics = {objective.__name__: [] for objective in EVAL_OBJECTIVES}
-    metrics["loss"] = []
-    steps = 0
+    policy.train()
+    losses: list[float] = []
+    accumulated_batches = 0
     try:
         for epoch in range(cfg.epochs):
-            for file in tqdm.tqdm(list(data_files), desc=f"Epoch {epoch+1}/{cfg.epochs}", unit="file"):
-                # can't load all at once due to memory restrictions
-                with open(f'./data/shuffled_chunks/{file}', "rb") as f:
-                    samples = pickle.load(f)
-                
-                num_samples = len(samples)
-                num_batches = (num_samples + cfg.batch_size - 1) // cfg.batch_size
+            epoch_dataset = dataset.take(cfg.max_batches) if cfg.max_batches else dataset
+            progress = tqdm.tqdm(
+                epoch_dataset.as_numpy_iterator(), desc=f"Epoch {epoch + 1}/{cfg.epochs}", unit="batch", total=cfg.max_batches)
+            for batch in progress:
+                observation, actions = bridge_batch_to_torch(batch, cfg.device, processor)
+                if actions.shape[1:] != (
+                    cfg.smolpi.action_horizon,
+                    cfg.smolpi.action_dim,
+                ):
+                    raise ValueError(
+                        "Unexpected Bridge action shape: "
+                        f"{tuple(actions.shape)}; expected [batch, "
+                        f"{cfg.smolpi.action_horizon}, {cfg.smolpi.action_dim}]"
+                    )
 
-                pbar = tqdm.tqdm(range(num_batches), desc="Batches", unit="batch", leave=False)
-                for batch in pbar:
-                    batch_samples = samples[batch*cfg.batch_size : (batch+1)*cfg.batch_size]
+                with amp_context():
+                    loss = policy(observation, actions).mean()
+                    (loss / cfg.grad_accum_steps).backward()
 
-                    observations = []
-                    actions = []
+                accumulated_batches += 1
+                if accumulated_batches == cfg.grad_accum_steps:
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    accumulated_batches = 0
 
-                    for sample in batch_samples:
-                        obs = sample["observation"]
-                        action = sample["action"]
-                        observations.append(obs)
-                        action_tensor = torch.as_tensor(action, dtype=torch.float32)
-                        if action_tensor.ndim == 1:
-                            action_tensor = action_tensor.unsqueeze(0)
-                        actions.append(action_tensor)
+                loss_value = loss.detach().item()
+                losses.append(loss_value)
+                progress.set_postfix(loss=f"{loss_value:.4f}")
 
-                    observations_tensor = stack_observations(observations, device=cfg.device, processor=processor)
-
-                    actions_tensor = torch.stack(actions).to(cfg.device)
-                
-                    if actions_tensor.shape[1] != cfg.smolpi.action_horizon:
-                        raise ValueError(
-                            f"Sample action horizon {actions_tensor.shape[1]} does not match cfg.smolpi.action_horizon "
-                            f"{cfg.smolpi.action_horizon}; regenerate synthetic data with the current horizon."
-                        )
-                    with amp_ctx:
-                        loss = policy(observations_tensor, actions_tensor).mean()
-                        scaled_loss = loss / cfg.grad_accum_steps
-
-                        scaled_loss.backward()
-
-                    should_step = (batch + 1) % cfg.grad_accum_steps == 0 or (batch + 1) == num_batches
-                    if should_step:
-                        optimizer.step()
-                        optimizer.zero_grad()
-                    metrics["loss"].append(loss.item())
-                    pbar.set_postfix({"loss": loss.item()})
-                # todo: eval
-                # print(steps, steps % 4)
-            tqdm.tqdm.write(f"Evaluating policy at epoch {epoch+1}, file {steps}/{len(data_files)}...")
-            policy.eval()
-            for objective in tqdm.tqdm(EVAL_OBJECTIVES, desc="Evaluating Objectives", leave=False):
-                all_samples = env.rollout(
-                    policy=policy,
-                    reward_models=[objective(cfg) for _ in range(cfg.num_parallel_rollouts)],
-                    write_to_video=True,
-                )
-                episode_returns = [
-                    sum(s["reward"] for s in all_samples if s["env_idx"] == env_idx)
-                    for env_idx in range(cfg.num_parallel_rollouts)
-                ]
-                mean_episode_return = float(np.mean(episode_returns))
-                metrics[objective.__name__].append(mean_episode_return)
-                tqdm.tqdm.write(f"File: {file}, Objective: {objective.__name__}, Mean Episode Return: {mean_episode_return:.2f}")
-            policy.train()
     finally:
-        try:
-            env.close()
-        finally:
-            # save
-            torch.save(policy.state_dict(), "smolpi_sft_final.pth")
-            with open("sft_training_metrics.pkl", "wb") as f:
-                pickle.dump(metrics, f)
+        torch.save(policy.state_dict(), "smolpi_bridge.pth")
+        with open("training_metrics.pkl", "wb") as metrics_file:
+            pickle.dump({"loss": losses}, metrics_file)
+
 
 if __name__ == "__main__":
     main()

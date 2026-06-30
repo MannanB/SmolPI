@@ -69,60 +69,6 @@ def stack_observations(observations: list[Observation], device: torch.device, pr
 
     return obs
 
-def action_from_red(image, center_threshold=0.15, min_red_pixels=100):
-    """
-    image: [3, H, W] RGB tensor, either 0–1 or 0–255.
-
-    Returns:
-        [0, 0]   if red is near the center
-        [2, -2]  if red is left of center
-        [-2, 2]  if red is right of center or missing
-    """
-    image = torch.as_tensor(image, dtype=torch.float32)
-
-    # Remove an optional leading dimension: [1, 3, H, W] -> [3, H, W]
-    if image.ndim == 4:
-        image = image.squeeze(0)
-
-    # Normalize 0–255 images to 0–1
-    if image.max() > 1.5:
-        image = image / 255.0
-
-    r, g, b = image[0], image[1], image[2]
-
-    # Red detection:
-    # - allows darker red caused by shadows
-    # - requires red to dominate green and blue
-    # - avoids most pink/white regions
-    red_mask = (
-        (r > 0.18)
-        & (r > g * 1.35)
-        & (r > b * 1.35)
-        & ((r - g) > 0.08)
-        & ((r - b) > 0.08)
-    )
-
-    red_locations = torch.nonzero(red_mask, as_tuple=False)
-
-    if red_locations.shape[0] < min_red_pixels:
-        return torch.tensor([[-2.0, 2.0]], dtype=torch.float32), red_mask
-
-    # red_locations columns are [y, x]
-    red_center_x = red_locations[:, 1].float().mean()
-    image_center_x = image.shape[2] / 2
-
-    # Fraction of image width considered "middle-ish"
-    threshold_pixels = image.shape[2] * center_threshold
-
-    if red_center_x < image_center_x - threshold_pixels:
-        return torch.tensor([[-2.0, 2.0]], dtype=torch.float32), red_mask
-
-    if red_center_x > image_center_x + threshold_pixels:
-        return torch.tensor([[2.0, -2.0]], dtype=torch.float32), red_mask
-
-    return torch.tensor([[0.0, 0.0]], dtype=torch.float32), red_mask
-
-
 from two_wheeled.objectives import *
 EVAL_OBJECTIVES = [FaceRedPlatformRewardModel, MoveForwardRewardModel, MoveToGreenPlatformRewardModel]
 
