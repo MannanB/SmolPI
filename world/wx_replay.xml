@@ -1,0 +1,16 @@
+<mujoco model="wx250s arm replay">
+  <include file="wx250s.xml"/>
+
+  <statistic center="0.18 0 0.18" extent="0.48"/>
+
+  <visual>
+    <headlight diffuse="0.75 0.75 0.75" ambient="0.35 0.35 0.35" specular="0.1 0.1 0.1"/>
+    <global offwidth="512" offheight="512"/>
+  </visual>
+
+  <worldbody>
+    <light pos="0.5 -0.5 1.2" dir="-0.3 0.3 -1" directional="true"/>
+    <camera name="replay_cam" mode="targetbody" target="wx250s/gripper_link"
+      pos="0.72 -0.72 0.55" fovy="52"/>
+  </worldbody>
+</mujoco>

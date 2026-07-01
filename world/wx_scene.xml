@@ -20,6 +20,7 @@
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
     <camera name="scene_cam" mode="targetbody" target="red_box" pos="0.75 -0.75 0.55" fovy="52"/>
+    <camera name="scene_cam_2" mode="targetbody" target="red_box" pos="0.75 0.75 0.55" fovy="52"/>
     <body name="red_box" pos="0.34 0 0.025">
       <freejoint name="red_box_freejoint"/>
       <geom name="red_box_geom" type="box" size="0.025 0.025 0.025"

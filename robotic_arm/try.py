@@ -28,8 +28,8 @@ ARM_JOINTS = (
     "wrist_angle",
     "wrist_rotate",
 )
-HOME_QPOS = np.array([0.0, -0.96, 1.16, 0.0, -0.3, 0.0, 0.037, -0.037])
-HOME_CTRL = np.array([0.0, -0.96, 1.16, 0.0, -0.3, 0.0, 0.037])
+HOME_QPOS = np.array([0.0, -0.96, 1.16, 0.0, -0.3, 0.0, 0.015, -0.015])
+HOME_CTRL = np.array([0.0, -0.96, 1.16, 0.0, -0.3, 0.0, 0.015])
 
 
 def rotation_matrix_to_euler_xyz(matrix: np.ndarray) -> np.ndarray:
@@ -100,7 +100,7 @@ class Wx250sTrial:
             str(output_path),
             cv2.VideoWriter_fourcc(*"mp4v"),
             fps,
-            (2 * width, height),
+            (3 * width, height),
         )
         if not self.writer.isOpened():
             raise RuntimeError(f"Could not open video writer for {output_path}")
@@ -124,15 +124,26 @@ class Wx250sTrial:
         self.renderer.update_scene(self.data, camera=camera)
         return np.asarray(self.renderer.render()).copy()
 
-    def render_views(self) -> tuple[np.ndarray, np.ndarray]:
-        return self.render_camera("scene_cam"), self.render_camera("wrist_cam")
+    def render_views(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return (
+            self.render_camera("scene_cam"),
+            self.render_camera("scene_cam_2"),
+            self.render_camera("wrist_cam"),
+        )
 
-    def write_frame(self, scene_rgb: np.ndarray, wrist_rgb: np.ndarray) -> bool:
+    def write_frame(
+        self,
+        scene_rgb: np.ndarray,
+        scene_2_rgb: np.ndarray,
+        wrist_rgb: np.ndarray,
+    ) -> bool:
         scene_bgr = cv2.cvtColor(scene_rgb, cv2.COLOR_RGB2BGR)
+        scene_2_bgr = cv2.cvtColor(scene_2_rgb, cv2.COLOR_RGB2BGR)
         wrist_bgr = cv2.cvtColor(wrist_rgb, cv2.COLOR_RGB2BGR)
         cv2.putText(scene_bgr, "scene camera", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(scene_2_bgr, "scene camera 2", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.putText(wrist_bgr, "wrist camera", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        composite = np.concatenate([scene_bgr, wrist_bgr], axis=1)
+        composite = np.concatenate([scene_bgr, scene_2_bgr, wrist_bgr], axis=1)
         cv2.putText(
             composite,
             f'prompt: "{PROMPT}"   t={self.data.time:05.2f}s',
@@ -158,6 +169,7 @@ class Wx250sTrial:
     def observation(
         self,
         scene_rgb: np.ndarray,
+        scene_2_rgb: np.ndarray,
         wrist_rgb: np.ndarray,
         processor,
         device: torch.device,
@@ -171,10 +183,12 @@ class Wx250sTrial:
         return Observation(
             images={
                 "scene_cam": frame_to_tensor(scene_rgb, device),
+                "scene_cam_2": frame_to_tensor(scene_2_rgb, device),
                 "wrist_cam": frame_to_tensor(wrist_rgb, device),
             },
             image_masks={
                 "scene_cam": torch.ones(1, dtype=torch.bool, device=device),
+                "scene_cam_2": torch.ones(1, dtype=torch.bool, device=device),
                 "wrist_cam": torch.ones(1, dtype=torch.bool, device=device),
             },
             tokenized_prompt=tokens["input_ids"].to(device=device, dtype=torch.long),
@@ -289,8 +303,10 @@ def run(args: argparse.Namespace) -> None:
     try:
         with torch.inference_mode():
             while trial.data.time < args.duration and keep_running:
-                scene_rgb, wrist_rgb = trial.render_views()
-                observation = trial.observation(scene_rgb, wrist_rgb, processor, device)
+                scene_rgb, scene_2_rgb, wrist_rgb = trial.render_views()
+                observation = trial.observation(
+                    scene_rgb, scene_2_rgb, wrist_rgb, processor, device
+                )
                 amp_context = (
                     torch.autocast(device_type="cuda", dtype=policy.config.precision)
                     if device.type == "cuda"
@@ -310,8 +326,10 @@ def run(args: argparse.Namespace) -> None:
                     for _ in range(sim_steps_per_action):
                         mujoco.mj_step(trial.model, trial.data)
                         if trial.data.time + 1e-9 >= next_frame_time:
-                            scene_rgb, wrist_rgb = trial.render_views()
-                            keep_running = trial.write_frame(scene_rgb, wrist_rgb)
+                            scene_rgb, scene_2_rgb, wrist_rgb = trial.render_views()
+                            keep_running = trial.write_frame(
+                                scene_rgb, scene_2_rgb, wrist_rgb
+                            )
                             next_frame_time += 1.0 / args.fps
                         if trial.data.time >= args.duration or not keep_running:
                             break
@@ -331,9 +349,9 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("vids/smolpi_bridge_wx250s_pick_red_box.mp4"),
     )
-    parser.add_argument("--duration", type=float, default=10.0)
+    parser.add_argument("--duration", type=float, default=50.0)
     parser.add_argument("--control-hz", type=float, default=5.0)
-    parser.add_argument("--flow-steps", type=int, default=12)
+    parser.add_argument("--flow-steps", type=int, default=75)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=512)
