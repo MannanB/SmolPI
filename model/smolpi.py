@@ -101,7 +101,7 @@ class SmolPIConfig(BaseModel):
 
     smolvlm_id: str = "HuggingFaceTB/SmolVLM-256M-Instruct"
     action_expert_id: str = "HuggingFaceTB/SmolLM2-135M"
-    train_vlm_with_lora: bool = True
+    train_vlm_with_lora: bool = False
     vlm_lora_rank: int = 8
     vlm_lora_alpha: int = 16
     vlm_lora_dropout: float = 0.05

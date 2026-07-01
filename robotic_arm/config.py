@@ -15,15 +15,15 @@ class Config(BaseModel):
     smolpi: SmolPIConfig
 
     # model hyper params
-    flow_steps: int = 24
+    flow_steps: int = 60
     flow_std: float = 0.05
     kl_coef: float = 0.05
 
     # sft specific configs
     epochs: int = 10
     lr: float = 1e-4
-    batch_size: int = 32
-    grad_accum_steps: int = 12
+    batch_size: int = 16
+    grad_accum_steps: int = 24
     weight_decay: float = 1e-4
     use_8bit_adam: bool = False
 

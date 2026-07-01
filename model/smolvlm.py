@@ -69,20 +69,20 @@ class SmolVLMWithExpertModel(nn.Module):
         super().__init__()
 
         self.smolvlm = SmolVLMForConditionalGeneration.from_pretrained(smolvlm_id, config=vlm_config_hf).to(precision)
-        # if use_vlm_lora:
-        #     self.enable_smolvlm_lora(
-        #         rank=vlm_lora_rank,
-        #         alpha=vlm_lora_alpha,
-        #         dropout=vlm_lora_dropout,
-        #         target_modules=vlm_lora_target_modules,
-        #         train_layer_fraction=vlm_lora_train_layer_fraction,
-        #         layer_selection=vlm_lora_layer_selection,
-        #     )
+        if use_vlm_lora:
+            self.enable_smolvlm_lora(
+                rank=vlm_lora_rank,
+                alpha=vlm_lora_alpha,
+                dropout=vlm_lora_dropout,
+                target_modules=vlm_lora_target_modules,
+                train_layer_fraction=vlm_lora_train_layer_fraction,
+                layer_selection=vlm_lora_layer_selection,
+            )
         self.action_expert = LlamaForCausalLM(config=action_expert_config_hf)
 
         self.action_expert.model.embed_tokens = None
 
-        self.freeze_smolvlm()
+        # self.freeze_smolvlm()
         self.to_bfloat16_for_selected_params(precision)
         self.keep_trainable_params_float32_for_fp16(precision)
 
@@ -184,7 +184,7 @@ class SmolVLMWithExpertModel(nn.Module):
 
     def train(self, mode: bool = True):
         super().train(mode)
-        self.smolvlm.eval()
+        # self.smolvlm.eval()
         return self
 
     def keep_trainable_params_float32_for_fp16(

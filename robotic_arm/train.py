@@ -10,6 +10,8 @@ from typing import Any
 import torch
 import tqdm
 from transformers import AutoProcessor
+import tensorflow as tf
+import tensorflow_datasets as tfds
 
 # Support both `python -m robotic_arm.train` and `python robotic_arm/train.py`.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -97,10 +99,6 @@ def build_bridge_dataset(
     batch_size: int,
     shuffle_buffer: int,
 ):
-    """Build batched observation/future-action windows from Bridge episodes."""
-    import tensorflow as tf
-    import tensorflow_datasets as tfds
-
     builder = tfds.builder_from_directory(dataset_path)
     episodes = builder.as_dataset(split=split, shuffle_files=True)
 
@@ -142,12 +140,12 @@ def main() -> None:
     precision = torch.float16 if torch.cuda.is_available() else torch.float32
     cfg = Config(
         smolpi=SmolPIConfig(action_dim=7, action_horizon=1, precision=precision),
+        use_8bit_adam=True
     )
     policy = SmolPI(cfg.smolpi).to(cfg.device)
     trainable_params = (parameter for parameter in policy.parameters() if parameter.requires_grad)
     if cfg.use_8bit_adam:
         import bitsandbytes as bnb
-
         optimizer = bnb.optim.AdamW8bit(
             trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay
         )
