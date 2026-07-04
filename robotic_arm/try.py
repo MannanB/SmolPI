@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from model.smolpi import Observation, SmolPI, SmolPIConfig
 
 
-PROMPT = "pick up red box"
+PROMPT = "pick up the red box"
 ARM_JOINTS = (
     "waist",
     "shoulder",
@@ -28,8 +28,32 @@ ARM_JOINTS = (
     "wrist_angle",
     "wrist_rotate",
 )
-HOME_QPOS = np.array([0.0, -0.96, 1.16, 0.0, -0.3, 0.0, 0.015, -0.015])
-HOME_CTRL = np.array([0.0, -0.96, 1.16, 0.0, -0.3, 0.0, 0.015])
+# Preserve the original end-effector position while pitching the tool's +X
+# approach axis 45 degrees downward instead of parallel to the floor.
+HOME_QPOS = np.array([0.0, -0.712953, 0.501707, 0.0, 0.996644, 0.0, 0.015, -0.015])
+HOME_CTRL = np.array([0.0, -0.712953, 0.501707, 0.0, 0.996644, 0.0, 0.015])
+
+
+class ActionNormalizer:
+    def __init__(self, stats_path: Path) -> None:
+        if not stats_path.exists():
+            raise FileNotFoundError(f"Missing action statistics: {stats_path}")
+        with np.load(stats_path) as stats:
+            self.mean = np.asarray(stats["mean"], dtype=np.float32)
+            self.std = np.maximum(
+                np.asarray(stats["std"], dtype=np.float32), 1e-6
+            )
+        if self.mean.shape != (7,) or self.std.shape != (7,):
+            raise ValueError(
+                f"Expected 7D action statistics, got "
+                f"mean={self.mean.shape}, std={self.std.shape}"
+            )
+
+    def normalize(self, values: np.ndarray) -> np.ndarray:
+        return np.clip((values - self.mean) / self.std, -5.0, 5.0)
+
+    def unnormalize(self, values: np.ndarray) -> np.ndarray:
+        return values * self.std + self.mean
 
 
 def rotation_matrix_to_euler_xyz(matrix: np.ndarray) -> np.ndarray:
@@ -173,6 +197,7 @@ class Wx250sTrial:
         wrist_rgb: np.ndarray,
         processor,
         device: torch.device,
+        normalizer: ActionNormalizer,
     ) -> Observation:
         formatted_prompt = processor.apply_chat_template(
             [{"role": "user", "content": [{"type": "text", "text": PROMPT}]}],
@@ -193,7 +218,9 @@ class Wx250sTrial:
             },
             tokenized_prompt=tokens["input_ids"].to(device=device, dtype=torch.long),
             tokenized_prompt_mask=tokens["attention_mask"].to(device=device, dtype=torch.bool),
-            state=torch.from_numpy(self.bridge_state()).to(device=device).unsqueeze(0),
+            state=torch.from_numpy(normalizer.normalize(self.bridge_state()))
+            .to(device=device)
+            .unsqueeze(0),
         )
 
     def solve_ik(self, action: np.ndarray) -> np.ndarray:
@@ -267,7 +294,7 @@ def load_policy(checkpoint_path: Path, device: torch.device) -> SmolPI:
         raise FileNotFoundError(f"Missing checkpoint: {checkpoint_path}")
     precision = torch.float16 if device.type == "cuda" else torch.float32
     policy = SmolPI(
-        SmolPIConfig(action_dim=7, action_horizon=5, precision=precision)
+        SmolPIConfig(action_dim=7, action_horizon=1, precision=precision)
     ).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     if isinstance(checkpoint, dict) and "policy_state_dict" in checkpoint:
@@ -281,6 +308,7 @@ def run(args: argparse.Namespace) -> None:
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     policy = load_policy(args.checkpoint, device)
+    normalizer = ActionNormalizer(args.action_stats)
     processor = AutoProcessor.from_pretrained(policy.config.smolvlm_id)
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
@@ -305,20 +333,28 @@ def run(args: argparse.Namespace) -> None:
             while trial.data.time < args.duration and keep_running:
                 scene_rgb, scene_2_rgb, wrist_rgb = trial.render_views()
                 observation = trial.observation(
-                    scene_rgb, scene_2_rgb, wrist_rgb, processor, device
+                    scene_rgb,
+                    scene_2_rgb,
+                    wrist_rgb,
+                    processor,
+                    device,
+                    normalizer,
                 )
                 amp_context = (
                     torch.autocast(device_type="cuda", dtype=policy.config.precision)
                     if device.type == "cuda"
                     else nullcontext()
                 )
+                # print(observation.state.shape)
                 with amp_context:
                     action_chunk = policy.sample_actions(
                         device,
                         observation,
                         num_steps=args.flow_steps,
+                        # noise=observation.state.unsqueeze(1)
                     )
-                actions = action_chunk[0].float().cpu().numpy()
+                normalized_actions = action_chunk[0].float().cpu().numpy()
+                actions = normalizer.unnormalize(normalized_actions)
                 print(f"t={trial.data.time:05.2f} actions={np.round(actions, 3).tolist()}")
 
                 for action in actions:
@@ -345,13 +381,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene", type=Path, default=Path("world/wx_scene.xml"))
     parser.add_argument("--checkpoint", type=Path, default=Path("smolpi_bridge.pth"))
     parser.add_argument(
+        "--action-stats", type=Path, default=Path("action_stats.npz")
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("vids/smolpi_bridge_wx250s_pick_red_box.mp4"),
     )
-    parser.add_argument("--duration", type=float, default=50.0)
+    parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--control-hz", type=float, default=5.0)
-    parser.add_argument("--flow-steps", type=int, default=75)
+    parser.add_argument("--flow-steps", type=int, default=24)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=512)

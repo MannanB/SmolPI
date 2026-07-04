@@ -1,6 +1,5 @@
 
-import math
-from typing import Literal, Sequence
+from typing import Literal
 
 import torch
 from torch import nn
@@ -11,78 +10,18 @@ from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.llama import modeling_llama
 
 
-class LoRALinear(nn.Module):
-    def __init__(self, base_layer: nn.Linear, rank: int, alpha: int, dropout: float):
-        super().__init__()
-        if rank <= 0:
-            raise ValueError(f"LoRA rank must be positive, got {rank}")
-
-        self.base_layer = base_layer
-        self.lora_dropout = nn.Dropout(dropout)
-        self.lora_A = nn.Linear(
-            base_layer.in_features,
-            rank,
-            bias=False,
-            device=base_layer.weight.device,
-            dtype=base_layer.weight.dtype,
-        )
-        self.lora_B = nn.Linear(
-            rank,
-            base_layer.out_features,
-            bias=False,
-            device=base_layer.weight.device,
-            dtype=base_layer.weight.dtype,
-        )
-        self.scaling = alpha / rank
-
-        nn.init.kaiming_uniform_(self.lora_A.weight, a=5**0.5)
-        nn.init.zeros_(self.lora_B.weight)
-
-        for param in self.base_layer.parameters():
-            param.requires_grad = False
-
-    @property
-    def weight(self):
-        return self.base_layer.weight
-
-    @property
-    def bias(self):
-        return self.base_layer.bias
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        base_out = self.base_layer(x)
-        lora_x = self.lora_dropout(x)
-        lora_out = self.lora_B(self.lora_A(lora_x)) * self.scaling
-        return base_out + lora_out.to(dtype=base_out.dtype)
-
-
 class SmolVLMWithExpertModel(nn.Module):
     def __init__(self, smolvlm_id, vlm_config_hf, action_expert_config_hf, \
-                 precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16",
-                 use_vlm_lora: bool = True,
-                 vlm_lora_rank: int = 16,
-                 vlm_lora_alpha: int = 32,
-                 vlm_lora_dropout: float = 0.05,
-                 vlm_lora_target_modules: Sequence[str] | None = None,
-                 vlm_lora_train_layer_fraction: float = 1.0,
-                 vlm_lora_layer_selection: Literal["first", "last"] = "last"):
+                 precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16"):
         super().__init__()
 
         self.smolvlm = SmolVLMForConditionalGeneration.from_pretrained(smolvlm_id, config=vlm_config_hf).to(precision)
-        if use_vlm_lora:
-            self.enable_smolvlm_lora(
-                rank=vlm_lora_rank,
-                alpha=vlm_lora_alpha,
-                dropout=vlm_lora_dropout,
-                target_modules=vlm_lora_target_modules,
-                train_layer_fraction=vlm_lora_train_layer_fraction,
-                layer_selection=vlm_lora_layer_selection,
-            )
+
         self.action_expert = LlamaForCausalLM(config=action_expert_config_hf)
 
         self.action_expert.model.embed_tokens = None
 
-        # self.freeze_smolvlm()
+        self.freeze_smolvlm()
         self.to_bfloat16_for_selected_params(precision)
         self.keep_trainable_params_float32_for_fp16(precision)
 
@@ -92,57 +31,6 @@ class SmolVLMWithExpertModel(nn.Module):
         for param in self.smolvlm.parameters():
             param.requires_grad = False
 
-    def enable_smolvlm_lora(
-        self,
-        rank: int = 16,
-        alpha: int = 32,
-        dropout: float = 0.05,
-        target_modules: Sequence[str] | None = None,
-        train_layer_fraction: float = 1.0,
-        layer_selection: Literal["first", "last"] = "last",
-    ):
-        """Freeze SmolVLM base weights and train in-place LoRA adapters instead."""
-
-        if target_modules is None:
-            target_modules = (
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "out_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-                "fc1",
-                "fc2",
-            )
-
-        target_modules = tuple(target_modules)
-        enabled_layers = self._select_lora_layers(train_layer_fraction, layer_selection)
-        for param in self.smolvlm.parameters():
-            param.requires_grad = False
-
-        replaced = 0
-        for module_name, module in list(self.smolvlm.named_modules()):
-            # print(f"Checking SmolVLM module for LoRA replacement: {module_name}")
-            child_name = module_name.rsplit(".", 1)[-1]
-            if child_name not in target_modules or not isinstance(module, nn.Linear):
-                continue
-            layer_key = self._module_layer_key(module_name)
-            if layer_key is not None and layer_key not in enabled_layers:
-                continue
-
-            parent = self.smolvlm
-            if "." in module_name:
-                parent_name = module_name.rsplit(".", 1)[0]
-                parent = self.smolvlm.get_submodule(parent_name)
-            setattr(parent, child_name, LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout))
-            replaced += 1
-
-
-        if replaced == 0:
-            raise ValueError(f"No SmolVLM nn.Linear modules matched LoRA targets: {target_modules}")
-
     def _module_layer_key(self, module_name: str) -> tuple[str, int] | None:
         parts = module_name.split(".")
         for idx, part in enumerate(parts[:-1]):
@@ -150,41 +38,9 @@ class SmolVLMWithExpertModel(nn.Module):
                 return ".".join(parts[: idx + 1]), int(parts[idx + 1])
         return None
 
-    def _select_lora_layers(
-        self,
-        train_layer_fraction: float,
-        layer_selection: Literal["first", "last"],
-    ) -> set[tuple[str, int]]:
-        if not 0.0 < train_layer_fraction <= 1.0:
-            raise ValueError(f"LoRA train layer fraction must be in (0, 1], got {train_layer_fraction}")
-        if layer_selection not in ("first", "last"):
-            raise ValueError(f"Invalid LoRA layer selection: {layer_selection}")
-
-        layer_groups: dict[str, set[int]] = {}
-        for module_name, module in self.smolvlm.named_modules():
-            if not isinstance(module, nn.Linear):
-                continue
-            layer_key = self._module_layer_key(module_name)
-            if layer_key is None:
-                continue
-            group_name, layer_idx = layer_key
-            layer_groups.setdefault(group_name, set()).add(layer_idx)
-
-        enabled_layers: set[tuple[str, int]] = set()
-        for group_name, layer_indices in layer_groups.items():
-            sorted_indices = sorted(layer_indices)
-            num_enabled = max(1, math.ceil(len(sorted_indices) * train_layer_fraction))
-            if layer_selection == "first":
-                selected = sorted_indices[:num_enabled]
-            else:
-                selected = sorted_indices[-num_enabled:]
-            enabled_layers.update((group_name, layer_idx) for layer_idx in selected)
-
-        return enabled_layers
-
     def train(self, mode: bool = True):
         super().train(mode)
-        # self.smolvlm.eval()
+        self.smolvlm.eval()
         return self
 
     def keep_trainable_params_float32_for_fp16(
@@ -194,8 +50,6 @@ class SmolVLMWithExpertModel(nn.Module):
             return
 
         for name, param in self.named_parameters():
-            if ".lora_A." in name or ".lora_B." in name:
-                continue
             if param.requires_grad:
                 param.data = param.data.to(dtype=torch.float32)
 
@@ -239,15 +93,12 @@ class SmolVLMWithExpertModel(nn.Module):
             if any(selector in name for selector in params_to_keep_float32):
                 param.data = param.data.to(dtype=torch.float32)
 
-    def embed_image(self, image: torch.Tensor):
-        # SmolVLM expects [B, N, C, H, W]. If caller provides [B, C, H, W], assume one image per sample.
-        if image.ndim == 4:
-            image = image[:, None, :, :, :]
-        return self.smolvlm.get_image_features(image)
+    def embed_image(self, pixel_values: torch.Tensor, pixel_attention_mask: torch.Tensor | None):
+        return self.smolvlm.model.get_image_features(pixel_values, pixel_attention_mask).to(pixel_values.device)
 
     def embed_language_tokens(self, tokens: torch.Tensor):
-        return self.smolvlm.model.text_model.embed_tokens(tokens)
-    
+        return self.smolvlm.model.get_input_embeddings()(tokens).to(tokens.device)
+
     def forward(
         self,
         attention_mask: torch.Tensor | None = None,
@@ -285,6 +136,7 @@ class SmolVLMWithExpertModel(nn.Module):
             total_seq_len = inputs_embeds[0].shape[1] + inputs_embeds[1].shape[1]
             batch_size = inputs_embeds[0].shape[0]
             hidden_size = self.smolvlm.config.text_config.hidden_size
+
             rope_input = torch.zeros(
                 batch_size,
                 total_seq_len,
@@ -299,37 +151,52 @@ class SmolVLMWithExpertModel(nn.Module):
                 key_states = []
                 value_states = []
                 input_lengths = []
+                residuals = []
 
                 for i, hidden_states in enumerate(layer_inputs):
                     layer = models[i].layers[layer_idx]
-                    hidden_states = layer.input_layernorm(hidden_states)
-                    target_dtype = layer.self_attn.q_proj.weight.dtype
-                    if hidden_states.dtype != target_dtype:
-                        hidden_states = hidden_states.to(dtype=target_dtype)
 
-                    input_shape = hidden_states.shape[:-1]
+                    residual = hidden_states
+                    residuals.append(residual)
+                    input_lengths.append(hidden_states.shape[1])
+
+                    normed_hidden_states = layer.input_layernorm(hidden_states)
+
+                    target_dtype = layer.self_attn.q_proj.weight.dtype
+                    if normed_hidden_states.dtype != target_dtype:
+                        normed_hidden_states = normed_hidden_states.to(dtype=target_dtype)
+
+                    input_shape = normed_hidden_states.shape[:-1]
                     head_dim = layer.self_attn.head_dim
 
                     num_heads = layer.self_attn.config.num_attention_heads
                     num_kv_heads = layer.self_attn.config.num_key_value_heads
+
                     query_shape = (*input_shape, num_heads, head_dim)
                     kv_shape = (*input_shape, num_kv_heads, head_dim)
-                    query_state = layer.self_attn.q_proj(hidden_states).view(query_shape).transpose(1, 2)
-                    key_state = layer.self_attn.k_proj(hidden_states).view(kv_shape).transpose(1, 2)
-                    value_state = layer.self_attn.v_proj(hidden_states).view(kv_shape).transpose(1, 2)
+
+                    query_state = layer.self_attn.q_proj(normed_hidden_states).view(query_shape).transpose(1, 2)
+                    key_state = layer.self_attn.k_proj(normed_hidden_states).view(kv_shape).transpose(1, 2)
+                    value_state = layer.self_attn.v_proj(normed_hidden_states).view(kv_shape).transpose(1, 2)
 
                     query_states.append(query_state)
                     key_states.append(key_state)
                     value_states.append(value_state)
-                    input_lengths.append(hidden_states.shape[1])
 
                 query_states = torch.cat(query_states, dim=2)
                 key_states = torch.cat(key_states, dim=2)
                 value_states = torch.cat(value_states, dim=2)
+
                 cos, sin = position_embeddings
-                query_states, key_states = modeling_llama.apply_rotary_pos_emb(query_states, key_states, cos, sin)
+                query_states, key_states = modeling_llama.apply_rotary_pos_emb(
+                    query_states,
+                    key_states,
+                    cos,
+                    sin,
+                )
 
                 att_layer = models[0].layers[layer_idx].self_attn
+
                 att_output, _ = modeling_llama.eager_attention_forward(
                     att_layer,
                     query_states,
@@ -346,21 +213,27 @@ class SmolVLMWithExpertModel(nn.Module):
 
                 outputs_embeds = []
                 start_pos = 0
+
                 for i, hidden_states in enumerate(layer_inputs):
                     layer = models[i].layers[layer_idx]
+
                     end_pos = start_pos + input_lengths[i]
                     layer_att_output = att_output[:, start_pos:end_pos]
+                    start_pos = end_pos
 
                     if layer_att_output.dtype != layer.self_attn.o_proj.weight.dtype:
                         layer_att_output = layer_att_output.to(layer.self_attn.o_proj.weight.dtype)
 
-                    hidden_states = hidden_states + layer.self_attn.o_proj(layer_att_output)
+                    # Correct Llama residual: original hidden_states + attention output
+                    hidden_states = residuals[i] + layer.self_attn.o_proj(layer_att_output)
+
+                    # Correct MLP residual
+                    residual = hidden_states
                     mlp_in = layer.post_attention_layernorm(hidden_states)
                     mlp_out = layer.mlp(mlp_in)
-                    hidden_states = hidden_states + mlp_out
+                    hidden_states = residual + mlp_out
 
                     outputs_embeds.append(hidden_states)
-                    start_pos = end_pos
 
                 return outputs_embeds
 
