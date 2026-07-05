@@ -82,14 +82,6 @@ def euler_xyz_to_rotation_matrix(euler: np.ndarray) -> np.ndarray:
     )
 
 
-def frame_to_tensor(frame: np.ndarray, device: torch.device) -> torch.Tensor:
-    # Training uses the native 256x256 Bridge camera resolution.
-    frame = cv2.resize(frame, (256, 256), interpolation=cv2.INTER_AREA)
-    tensor = torch.from_numpy(frame.copy()).to(device=device, dtype=torch.float32) / 255.0
-    tensor = (tensor - 0.5) / 0.5
-    return tensor.permute(2, 0, 1).contiguous().unsqueeze(0)
-
-
 class Wx250sTrial:
     def __init__(
         self,
@@ -194,33 +186,35 @@ class Wx250sTrial:
         self,
         scene_rgb: np.ndarray,
         scene_2_rgb: np.ndarray,
-        wrist_rgb: np.ndarray,
         processor,
         device: torch.device,
-        normalizer: ActionNormalizer,
     ) -> Observation:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "image"},
+                    {"type": "text", "text": PROMPT},
+                ],
+            }
+        ]
         formatted_prompt = processor.apply_chat_template(
-            [{"role": "user", "content": [{"type": "text", "text": PROMPT}]}],
+            messages,
             tokenize=False,
-            add_generation_prompt=True,
+            add_generation_prompt=False,
         )
-        tokens = processor.tokenizer(formatted_prompt, return_tensors="pt", truncation=True)
+        processed_inputs = processor(
+            text=[formatted_prompt],
+            images=[[scene_rgb, scene_2_rgb]],
+            padding=True,
+            return_tensors="pt",
+        )
+        processed_inputs = processed_inputs.to(device=device)
+
         return Observation(
-            images={
-                "scene_cam": frame_to_tensor(scene_rgb, device),
-                "scene_cam_2": frame_to_tensor(scene_2_rgb, device),
-                "wrist_cam": frame_to_tensor(wrist_rgb, device),
-            },
-            image_masks={
-                "scene_cam": torch.ones(1, dtype=torch.bool, device=device),
-                "scene_cam_2": torch.ones(1, dtype=torch.bool, device=device),
-                "wrist_cam": torch.ones(1, dtype=torch.bool, device=device),
-            },
-            tokenized_prompt=tokens["input_ids"].to(device=device, dtype=torch.long),
-            tokenized_prompt_mask=tokens["attention_mask"].to(device=device, dtype=torch.bool),
-            state=torch.from_numpy(normalizer.normalize(self.bridge_state()))
-            .to(device=device)
-            .unsqueeze(0),
+            processed_inputs=processed_inputs,
+            state=torch.from_numpy(self.bridge_state()).to(device=device).unsqueeze(0),
         )
 
     def solve_ik(self, action: np.ndarray) -> np.ndarray:
@@ -294,12 +288,12 @@ def load_policy(checkpoint_path: Path, device: torch.device) -> SmolPI:
         raise FileNotFoundError(f"Missing checkpoint: {checkpoint_path}")
     precision = torch.float16 if device.type == "cuda" else torch.float32
     policy = SmolPI(
-        SmolPIConfig(action_dim=7, action_horizon=1, precision=precision)
+        SmolPIConfig(action_dim=7, action_horizon=5, precision=precision)
     ).to(device)
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    if isinstance(checkpoint, dict) and "policy_state_dict" in checkpoint:
-        checkpoint = checkpoint["policy_state_dict"]
-    policy.load_state_dict(checkpoint)
+    # checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    # if isinstance(checkpoint, dict) and "policy_state_dict" in checkpoint:
+    #     checkpoint = checkpoint["policy_state_dict"]
+    # policy.load_state_dict(checkpoint)
     return policy.eval()
 
 
@@ -310,6 +304,7 @@ def run(args: argparse.Namespace) -> None:
     policy = load_policy(args.checkpoint, device)
     normalizer = ActionNormalizer(args.action_stats)
     processor = AutoProcessor.from_pretrained(policy.config.smolvlm_id)
+    processor.image_processor.do_image_splitting = False
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
@@ -327,7 +322,11 @@ def run(args: argparse.Namespace) -> None:
     next_frame_time = 0.0
     keep_running = True
 
-    print(f"device={device} prompt={PROMPT!r} output={args.output}")
+    execution_mode = "first action only" #if args.first_action_only else "full action chunk"
+    print(
+        f"device={device} prompt={PROMPT!r} output={args.output} "
+        f"execution={execution_mode}"
+    )
     try:
         with torch.inference_mode():
             while trial.data.time < args.duration and keep_running:
@@ -335,10 +334,8 @@ def run(args: argparse.Namespace) -> None:
                 observation = trial.observation(
                     scene_rgb,
                     scene_2_rgb,
-                    wrist_rgb,
                     processor,
                     device,
-                    normalizer,
                 )
                 amp_context = (
                     torch.autocast(device_type="cuda", dtype=policy.config.precision)
@@ -355,6 +352,8 @@ def run(args: argparse.Namespace) -> None:
                     )
                 normalized_actions = action_chunk[0].float().cpu().numpy()
                 actions = normalizer.unnormalize(normalized_actions)
+                if args.first_action_only:
+                    actions = actions[:1]
                 print(f"t={trial.data.time:05.2f} actions={np.round(actions, 3).tolist()}")
 
                 for action in actions:
@@ -391,6 +390,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--control-hz", type=float, default=5.0)
     parser.add_argument("--flow-steps", type=int, default=24)
+    parser.add_argument(
+        "--first-action-only",
+        action="store_true",
+        help="Execute only the first action from each generated chunk, then replan.",
+    )
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=512)

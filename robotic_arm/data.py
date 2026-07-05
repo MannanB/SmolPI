@@ -2,6 +2,7 @@ from platform import processor
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import tensorflow as tf
 from pathlib import Path
 
@@ -11,14 +12,22 @@ from model.smolpi import Observation
 from typing import Any
 
 import tensorflow_datasets as tfds
+from transformers.models.idefics3.processing_idefics3 import get_image_prompt_string
 
 
 BRIDGE_IMAGE_KEYS = ("image_0", "image_1") #, "image_2", "image_3")
 
 
+def decode_instruction(value: Any) -> str:
+    if isinstance(value, (bytes, np.bytes_)):
+        return value.decode("utf-8", errors="replace").strip()
+    return str(value).strip()
+
+
 def bridge_batch_to_torch(
     batch: dict[str, Any], device: torch.device, processor: Any
 ) -> tuple[Observation, torch.Tensor]:
+    processor.image_processor.do_image_splitting = False
 
     batch_size = len(batch["language_instruction"])
 
@@ -27,31 +36,62 @@ def bridge_batch_to_torch(
             {
                 "role": "user",
                 "content": [{"type": "image"} for _ in range(2)] + # up to two cams for memory
-                    [{"type": "text", "text": str(batch["language_instruction"][i]).strip()}],
+                    [{"type": "text", "text": decode_instruction(batch["language_instruction"][i])}],
             }
         ] for i in range(batch_size)
     ]
 
-    images1 = torch.tensor(batch["image_0"])
-    images2 = torch.tensor(batch["image_1"]) 
-    # theres also image_2 and image_3 but it aint worth it
-
-    images = [
-        [images1[i], images2[i]]
-        for i in range(images1.shape[0])
-    ]
-
     batch_prompts = processor.apply_chat_template(batch_messages, add_generation_prompt=False)
-    batch_inputs = processor(text=batch_prompts, images=images, padding=True, return_tensors="pt")
+    image_prompt = get_image_prompt_string(
+        0,
+        0,
+        processor.image_seq_len,
+        image_token=processor.image_token,
+        fake_token_around_image=processor.fake_image_token,
+        global_img_token=processor.global_image_tag,
+    )
+    batch_prompts = [prompt.replace(processor.image_token, image_prompt) for prompt in batch_prompts]
+    batch_inputs = processor.tokenizer(batch_prompts, padding=True, return_tensors="pt")
+
+    images = torch.from_numpy(np.stack([batch["image_0"], batch["image_1"]], axis=1))
+    state = torch.tensor(batch["state"], dtype=torch.float32)
+    actions = torch.tensor(batch["actions"], dtype=torch.float32)
+
+    if device.type == "cuda":
+        for key, value in batch_inputs.items():
+            batch_inputs[key] = value.pin_memory()
+        images = images.pin_memory()
+        state = state.pin_memory()
+        actions = actions.pin_memory()
+
     batch_inputs = batch_inputs.to(device=device, non_blocking=True)
+    images = images.to(device=device, non_blocking=True)
+    state = state.to(device=device, non_blocking=True)
+    actions = actions.to(device=device, non_blocking=True)
+
+    batch_size, num_images = images.shape[:2]
+    image_size = processor.image_processor.max_image_size["longest_edge"]
+    pixel_values = images.permute(0, 1, 4, 2, 3).reshape(-1, 3, images.shape[2], images.shape[3])
+    pixel_values = F.interpolate(
+        pixel_values.float(),
+        size=(image_size, image_size),
+        mode="bicubic",
+        align_corners=False,
+        antialias=True,
+    )
+    pixel_values = pixel_values.clamp_(0.0, 255.0).div_(127.5).sub_(1.0)
+    pixel_values = pixel_values.reshape(batch_size, num_images, 3, image_size, image_size)
+    batch_inputs["pixel_values"] = pixel_values
+    batch_inputs["pixel_attention_mask"] = torch.ones(
+        batch_size, num_images, image_size, image_size, dtype=torch.bool, device=device
+    )
 
     observation = Observation(
-        images=images,
-        prompts=batch["language_instruction"],
+        # images=images,
+        # prompts=batch["language_instruction"],
         processed_inputs=batch_inputs,
-        state=torch.tensor(batch["state"], device=device, dtype=torch.float32),
+        state=state,
     )
-    actions = torch.tensor(batch["actions"], device=device, dtype=torch.float32)
     return observation, actions
 
 def compute_action_stats(episodes, action_dim):
@@ -122,6 +162,9 @@ def build_bridge_dataset(
 ):
     builder = tfds.builder_from_directory(dataset_path)
     episodes = builder.as_dataset(split=split, shuffle_files=True)
+    episodes = episodes.filter(
+        lambda episode: episode["episode_metadata"]["has_language"]
+    )
 
     stats_episodes = (
         episodes
@@ -154,7 +197,7 @@ def build_bridge_dataset(
             observation = step["observation"]
             return {
                 **{key: observation[key] for key in BRIDGE_IMAGE_KEYS},
-                "state": normalize_action(observation["state"]),
+                "state": tf.cast(observation["state"], tf.float32),
                 "language_instruction": step["language_instruction"],
                 "actions": actions,
             }

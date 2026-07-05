@@ -20,10 +20,11 @@ class SmolVLMWithExpertModel(nn.Module):
         self.action_expert = LlamaForCausalLM(config=action_expert_config_hf)
 
         self.action_expert.model.embed_tokens = None
+        self.action_expert.lm_head = None
 
         self.freeze_smolvlm()
         self.to_bfloat16_for_selected_params(precision)
-        self.keep_trainable_params_float32_for_fp16(precision)
+        self.keep_action_expert_params_float32()
 
     def freeze_smolvlm(self):
         """Keep the base SmolVLM fixed while training the action expert."""
@@ -43,13 +44,9 @@ class SmolVLMWithExpertModel(nn.Module):
         self.smolvlm.eval()
         return self
 
-    def keep_trainable_params_float32_for_fp16(
-        self, precision: Literal["bfloat16", "float16", "float32"] | torch.dtype
-    ):
-        if precision not in ("float16", torch.float16):
-            return
-
-        for name, param in self.named_parameters():
+    def keep_action_expert_params_float32(self):
+        """Keep expert master weights and Adam state precise under autocast."""
+        for param in self.action_expert.parameters():
             if param.requires_grad:
                 param.data = param.data.to(dtype=torch.float32)
 

@@ -59,7 +59,7 @@ def sample_noise(shape, device):
     )
 
 def sample_time(bsize, device):
-    time_beta = sample_beta(1.1, 1.0, bsize, device)
+    time_beta = sample_beta(1.5, 1.0, bsize, device)
     time = time_beta * 0.99 + 0.01
     return time.to(dtype=torch.float32, device=device)
 
@@ -120,11 +120,10 @@ class SmolPIConfig(BaseModel):
 class Observation(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    images: dict[str, torch.Tensor]
-    prompt: str
+    # images: dict[str, torch.Tensor]
+    # prompt: str
 
     processed_inputs: object
-
     state: torch.Tensor
 
 class SmolPI(nn.Module):
@@ -285,7 +284,26 @@ class SmolPI(nn.Module):
         u_t = noise - actions
 
         prefix_embs, prefix_block_markers = self.embed_prefix(observation.processed_inputs)
-        suffix_embs, suffix_block_markers = self.embed_suffix(observation.state, x_t, time)
+
+        v_t = self._predict_velocity_from_prefix(
+            prefix_embs,
+            prefix_block_markers,
+            observation.state,
+            x_t,
+            time,
+        )
+        return F.mse_loss(u_t, v_t, reduction="none")
+
+    def _predict_velocity_from_prefix(
+        self,
+        prefix_embs,
+        prefix_block_markers,
+        state,
+        x_t,
+        time,
+    ):
+        """Predict velocity through the shared training and sampling path."""
+        suffix_embs, suffix_block_markers = self.embed_suffix(state, x_t, time)
 
         suffix_embs = suffix_embs.to(dtype=self.dtype)
         prefix_embs = prefix_embs.to(dtype=self.dtype)
@@ -321,8 +339,7 @@ class SmolPI(nn.Module):
         def action_out_proj_func(suffix_out):
             return self.action_out_proj(suffix_out)
 
-        v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
-        return F.mse_loss(u_t, v_t, reduction="none")
+        return self._apply_checkpoint(action_out_proj_func, suffix_out)
 
     @torch.no_grad()
     def sample_actions(
@@ -348,10 +365,10 @@ class SmolPI(nn.Module):
             prefix_block_markers
         )
 
-        # Compute image and language key value cache
-        additive_prefix_attention_mask = self._to_additive_attention_mask(prefix_attention_mask)
-        # self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-
+        # Compute the image/language KV cache once and reuse it for every flow step.
+        additive_prefix_attention_mask = self._to_additive_attention_mask(
+            prefix_attention_mask
+        )
         _, past_key_values = self.smolvlm_with_expert.forward(
             attention_mask=additive_prefix_attention_mask,
             position_ids=prefix_position_ids,
@@ -396,26 +413,22 @@ class SmolPI(nn.Module):
         x_t,
         timestep,
     ):
-        """Apply one denoising step of the noise x_t at timestep."""
-
+        """Apply one cached denoising step to the noisy action chunk."""
         suffix_embs, suffix_block_markers = self.embed_suffix(state, x_t, timestep)
         suffix_embs = suffix_embs.to(dtype=self.dtype)
 
         batch_size, suffix_len = suffix_embs.shape[:2]
-
-        suffix_attention_mask, _ = build_blockwise_attention_mask(suffix_block_markers)
-
+        suffix_attention_mask, _ = build_blockwise_attention_mask(
+            suffix_block_markers
+        )
         prefix_attention_mask = valid_prefix_tokens[:, None, :].expand(
             batch_size, suffix_len, -1
         )
-
         attention_mask = torch.cat(
             [prefix_attention_mask, suffix_attention_mask], dim=2
         )
-
         additive_attention_mask = self._to_additive_attention_mask(attention_mask)
 
-        # Position numbers continue after the valid (non-padding) prefix tokens.
         prefix_lengths = valid_prefix_tokens.sum(dim=1, keepdim=True)
         suffix_offsets = torch.arange(
             suffix_len, device=suffix_embs.device, dtype=torch.long
@@ -429,9 +442,7 @@ class SmolPI(nn.Module):
             inputs_embeds=[None, suffix_embs],
             use_cache=False,
         )
-
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
-
         return self.action_out_proj(suffix_out)
