@@ -1,13 +1,12 @@
 import sys
 import math
 import importlib
+import pickle
+from contextlib import nullcontext
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1])) # hack
-
-from contextlib import nullcontext
-import pickle
 
 import torch
 import tqdm
@@ -62,6 +61,33 @@ def build_lr_scheduler(optimizer, cfg):
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_multiplier)
 
+def init_wandb(cfg):
+    if not cfg.use_wandb:
+        return None
+    try:
+        import wandb
+    except ImportError as error:
+        raise ImportError("Install wandb or set use_wandb=False") from error
+
+    return wandb.init(
+        project=cfg.wandb_project,
+        name=cfg.wandb_run_name,
+        config={
+            "smolvlm_id": cfg.smolpi.smolvlm_id,
+            "action_expert_id": cfg.smolpi.action_expert_id,
+            "action_dim": cfg.smolpi.action_dim,
+            "action_horizon": cfg.smolpi.action_horizon,
+            "precision": str(cfg.smolpi.precision),
+            "epochs": cfg.epochs,
+            "learning_rate": cfg.lr,
+            "batch_size": cfg.batch_size,
+            "grad_accum_steps": cfg.grad_accum_steps,
+            "effective_batch_size": cfg.batch_size * cfg.grad_accum_steps,
+            "warmup_steps": cfg.warmup_steps,
+            "max_batches": cfg.max_batches,
+            "weight_decay": cfg.weight_decay,
+        },
+    )
 
 def save_checkpoint(
     policy: SmolPI,
@@ -90,18 +116,17 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
     if cfg.checkpoint_every_batches < 0 or cfg.video_every_batches < 0:
         raise ValueError("Batch artifact intervals must be non-negative")
 
-    amp_context = nullcontext()
+    amp_context = nullcontext
     if cfg.device.type != "cpu":
         amp_context = lambda: torch.autocast(device_type=cfg.device.type, dtype=cfg.smolpi.precision)
 
     scheduler = build_lr_scheduler(optimizer, cfg)
-
     processor = AutoProcessor.from_pretrained(cfg.smolpi.smolvlm_id)
-
     processor.image_processor.do_image_splitting = False
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
+    wandb_run = init_wandb(cfg)
     policy.train()
     losses: list[float] = []
     eval_steps: list[int] = []
@@ -109,7 +134,6 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
     conditioning_gaps: list[float] = []
     accumulated_batches = 0
     total_batches = 0
-    time_until_eval = 0
     try:
         for epoch in range(cfg.epochs):
             epoch_dataset = dataset.take(cfg.max_batches) if cfg.max_batches else dataset
@@ -119,7 +143,7 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
             for observation, actions in background_batches(
                 progress, cfg.device, processor, cfg.prefetch_batches
             ):
-
+                wandb_metrics = {}
                 with amp_context():
                     loss = policy(observation, actions).mean()
                     (loss / cfg.grad_accum_steps).backward()
@@ -128,7 +152,7 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
                 total_batches += 1
 
                 if accumulated_batches == cfg.grad_accum_steps:
-                    # grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
@@ -162,66 +186,22 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
                     )
                     tqdm.tqdm.write(f"Saved trial video: {video_path}")
 
-                if time_until_eval % 250 == 0:
-                    sample_count = min(2, actions.shape[0])
-                    sample_inputs = type(observation.processed_inputs)(
-                        {key: value[:sample_count] for key, value in observation.processed_inputs.items()}
-                    )
-                    sample_observation = Observation(
-                        processed_inputs=sample_inputs,
-                        state=observation.state[:sample_count],
-                    )
-                    policy.eval()
-                    with torch.no_grad():
-                        with amp_context():
-                            sample_actions = actions[:sample_count]
-                            eval_noise = sample_noise(sample_actions.shape, cfg.device)
-                            eval_time = torch.full(
-                                (sample_count,), 0.9, device=cfg.device, dtype=torch.float32
-                            )
-                            eval_loss = policy(
-                                sample_observation,
-                                sample_actions,
-                                noise=eval_noise,
-                                time=eval_time,
-                            ).mean()
-
-                            if sample_count > 1:
-                                shuffled_inputs = type(sample_inputs)(
-                                    {key: value.flip(0) for key, value in sample_inputs.items()}
-                                )
-                                shuffled_observation = Observation(
-                                    processed_inputs=shuffled_inputs,
-                                    state=sample_observation.state.flip(0),
-                                )
-                                shuffled_loss = policy(
-                                    shuffled_observation,
-                                    sample_actions,
-                                    noise=eval_noise,
-                                    time=eval_time,
-                                ).mean()
-                                conditioning_gap = (shuffled_loss - eval_loss).item()
-                            else:
-                                conditioning_gap = float("nan")
-
-                        eval_steps.append(time_until_eval)
-                        eval_losses.append(eval_loss.item())
-                        conditioning_gaps.append(conditioning_gap)
-                        tqdm.tqdm.write(
-                            f"Eval flow loss: {eval_loss.item():.4f}, "
-                            f"conditioning gap: {conditioning_gap:+.4f}"
-                        )
-                    policy.train()
-                time_until_eval += 1
-
+              
                 loss_value = loss.detach().item()
                 losses.append(loss_value)
+                if wandb_run is not None:
+                    wandb_metrics.update({
+                        "train/loss": loss_value,
+                        "train/learning_rate": optimizer.param_groups[0]["lr"],
+                    })
+                    wandb_run.log(wandb_metrics, step=total_batches)
+
                 progress.set_postfix(
                     loss=f"{loss_value:.4f}",
                     lr=f"{optimizer.param_groups[0]['lr']:.2e}",
-                    # grad_norm=f"{float(grad_norm):.3f}"
-                    # if accumulated_batches == 0
-                    # else "-",
+                    grad_norm=f"{float(grad_norm):.3f}"
+                    if accumulated_batches == 0
+                    else "-",
                 )
 
     finally:
@@ -236,12 +216,17 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
                 },
                 metrics_file,
             )
+        if wandb_run is not None:
+            wandb_run.finish()
 
 def main() -> None:
     precision = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     cfg = Config(
         smolpi=SmolPIConfig(action_dim=7, action_horizon=1, precision=precision),
-        use_8bit_adam=False
+        use_8bit_adam=False,
+        use_wandb=True,
+        wandb_project="smolpi",
+        wandb_run_name="bridge-10k",
     )
     policy = SmolPI(cfg.smolpi).to(cfg.device)
     trainable_params = (parameter for parameter in policy.parameters() if parameter.requires_grad)
@@ -251,7 +236,6 @@ def main() -> None:
     else:
         optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
     optimizer.zero_grad(set_to_none=True)
-
 
     dataset = build_bridge_dataset(
         cfg.dataset,
