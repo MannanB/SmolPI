@@ -12,10 +12,17 @@ from model.smolpi import Observation
 from typing import Any
 
 import tensorflow_datasets as tfds
-from transformers.models.idefics3.processing_idefics3 import get_image_prompt_string
 
 
 BRIDGE_IMAGE_KEYS = ("image_0", "image_1") #, "image_2", "image_3")
+
+def get_image_prompt_string(processor) -> str:
+    return (
+        processor.fake_image_token
+        + processor.global_image_tag
+        + processor.image_token * processor.image_seq_len
+        + processor.fake_image_token
+    )
 
 
 def decode_instruction(value: Any) -> str:
@@ -42,14 +49,7 @@ def bridge_batch_to_torch(
     ]
 
     batch_prompts = processor.apply_chat_template(batch_messages, add_generation_prompt=False)
-    image_prompt = get_image_prompt_string(
-        0,
-        0,
-        processor.image_seq_len,
-        image_token=processor.image_token,
-        fake_token_around_image=processor.fake_image_token,
-        global_img_token=processor.global_image_tag,
-    )
+    image_prompt = get_image_prompt_string(processor)
     batch_prompts = [prompt.replace(processor.image_token, image_prompt) for prompt in batch_prompts]
     batch_inputs = processor.tokenizer(batch_prompts, padding=True, return_tensors="pt")
 
