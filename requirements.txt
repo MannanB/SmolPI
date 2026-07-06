@@ -1,0 +1,14 @@
+beautifulsoup4
+bitsandbytes
+matplotlib
+mujoco
+numpy
+opencv-python
+pydantic
+requests
+tensorflow
+tensorflow-datasets
+torch
+tqdm
+transformers
+wandb
