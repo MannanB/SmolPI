@@ -1,5 +1,6 @@
 import sys
 import math
+import importlib
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -61,7 +62,33 @@ def build_lr_scheduler(optimizer, cfg):
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_multiplier)
 
+
+def save_checkpoint(
+    policy: SmolPI,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    path: Path,
+    *,
+    epoch: int,
+    batch: int,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "policy_state_dict": policy.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "epoch": epoch,
+            "batch": batch,
+            "action_horizon": policy.config.action_horizon,
+        },
+        path,
+    )
+
 def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config, optimizer: torch.optim.Optimizer):
+
+    if cfg.checkpoint_every_batches < 0 or cfg.video_every_batches < 0:
+        raise ValueError("Batch artifact intervals must be non-negative")
 
     amp_context = nullcontext()
     if cfg.device.type != "cpu":
@@ -81,6 +108,7 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
     eval_losses: list[float] = []
     conditioning_gaps: list[float] = []
     accumulated_batches = 0
+    total_batches = 0
     time_until_eval = 0
     try:
         for epoch in range(cfg.epochs):
@@ -97,6 +125,7 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
                     (loss / cfg.grad_accum_steps).backward()
 
                 accumulated_batches += 1
+                total_batches += 1
 
                 if accumulated_batches == cfg.grad_accum_steps:
                     # grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
@@ -104,6 +133,34 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
                     scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
                     accumulated_batches = 0
+
+                if cfg.checkpoint_every_batches > 0 and total_batches % cfg.checkpoint_every_batches == 0:
+                    checkpoint_path = (
+                        Path(cfg.checkpoint_dir)
+                        / f"smolpi_bridge_batch_{total_batches:08d}.pth"
+                    )
+                    save_checkpoint(
+                        policy,
+                        optimizer,
+                        scheduler,
+                        checkpoint_path,
+                        epoch=epoch + 1,
+                        batch=total_batches,
+                    )
+                    tqdm.tqdm.write(f"Saved checkpoint: {checkpoint_path}")
+
+                if cfg.video_every_batches > 0 and total_batches % cfg.video_every_batches == 0:
+                    video_path = (
+                        Path(cfg.video_dir)
+                        / f"smolpi_bridge_pick_red_box_batch_{total_batches:08d}.mp4"
+                    )
+                    try_module = importlib.import_module("robotic_arm.try")
+                    try_module.record_policy(
+                        policy,
+                        video_path,
+                        processor=processor,
+                    )
+                    tqdm.tqdm.write(f"Saved trial video: {video_path}")
 
                 if time_until_eval % 250 == 0:
                     sample_count = min(2, actions.shape[0])
@@ -183,7 +240,7 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
 def main() -> None:
     precision = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     cfg = Config(
-        smolpi=SmolPIConfig(action_dim=7, action_horizon=5, precision=precision),
+        smolpi=SmolPIConfig(action_dim=7, action_horizon=1, precision=precision),
         use_8bit_adam=False
     )
     policy = SmolPI(cfg.smolpi).to(cfg.device)

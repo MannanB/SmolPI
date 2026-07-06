@@ -1,5 +1,6 @@
 vids/
-data/
+data/bridge_dataset
+data/two_wheeled
 out/
 
 *.pkl

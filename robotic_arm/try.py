@@ -287,26 +287,44 @@ def load_policy(checkpoint_path: Path, device: torch.device) -> SmolPI:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Missing checkpoint: {checkpoint_path}")
     precision = torch.float16 if device.type == "cuda" else torch.float32
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    action_horizon = (
+        int(checkpoint.get("action_horizon", 5))
+        if isinstance(checkpoint, dict) and "policy_state_dict" in checkpoint
+        else 5
+    )
     policy = SmolPI(
-        SmolPIConfig(action_dim=7, action_horizon=5, precision=precision)
+        SmolPIConfig(
+            action_dim=7,
+            action_horizon=action_horizon,
+            precision=precision,
+        )
     ).to(device)
-    # checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    # if isinstance(checkpoint, dict) and "policy_state_dict" in checkpoint:
-    #     checkpoint = checkpoint["policy_state_dict"]
-    # policy.load_state_dict(checkpoint)
+    if isinstance(checkpoint, dict) and "policy_state_dict" in checkpoint:
+        checkpoint = checkpoint["policy_state_dict"]
+    policy.load_state_dict(checkpoint)
     return policy.eval()
 
 
-def run(args: argparse.Namespace) -> None:
+def run(
+    args: argparse.Namespace,
+    policy: SmolPI | None = None,
+    processor=None,
+) -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    policy = load_policy(args.checkpoint, device)
+    if policy is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        policy = load_policy(args.checkpoint, device)
+    else:
+        device = next(policy.parameters()).device
+        policy.eval()
     normalizer = ActionNormalizer(args.action_stats)
-    processor = AutoProcessor.from_pretrained(policy.config.smolvlm_id)
-    processor.image_processor.do_image_splitting = False
-    if processor.tokenizer.pad_token is None:
-        processor.tokenizer.pad_token = processor.tokenizer.eos_token
+    if processor is None:
+        processor = AutoProcessor.from_pretrained(policy.config.smolvlm_id)
+        processor.image_processor.do_image_splitting = False
+        if processor.tokenizer.pad_token is None:
+            processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
     trial = Wx250sTrial(
         args.scene,
@@ -373,6 +391,47 @@ def run(args: argparse.Namespace) -> None:
     finally:
         trial.close()
     print(f"recorded {args.output.resolve()}")
+
+
+def record_policy(
+    policy: SmolPI,
+    output: Path,
+    *,
+    processor=None,
+    action_stats: Path = Path("action_stats.npz"),
+    scene: Path = Path("world/wx_scene.xml"),
+) -> None:
+    """Record the standard red-box pickup trial for an in-memory policy."""
+    was_training = policy.training
+    numpy_rng_state = np.random.get_state()
+    torch_rng_state = torch.random.get_rng_state()
+    cuda_rng_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        run(
+            argparse.Namespace(
+                scene=scene,
+                checkpoint=None,
+                action_stats=action_stats,
+                output=output,
+                duration=10.0,
+                control_hz=5.0,
+                flow_steps=24,
+                first_action_only=True,
+                fps=30,
+                width=512,
+                height=512,
+                seed=0,
+                show=False,
+            ),
+            policy=policy,
+            processor=processor,
+        )
+    finally:
+        np.random.set_state(numpy_rng_state)
+        torch.random.set_rng_state(torch_rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state_all(cuda_rng_state)
+        policy.train(was_training)
 
 
 def parse_args() -> argparse.Namespace:

@@ -7,7 +7,7 @@ with open("training_metrics_2.pkl", "rb") as f:
     metrics2 = pickle.load(f)
 loss = metrics["loss"]
 # loss2 = metrics2["loss"]
-wnd = 32
+wnd = 32*64
 loss = [sum(loss[max(0, i-wnd):i+1])/(i - max(0, i-wnd) + 1) for i in range(len(loss))]
 # loss2 = [sum(loss2[max(0, i-wnd):i+1])/(i - max(0, i-wnd) + 1) for i in range(len(loss2))]
 
