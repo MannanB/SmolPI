@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import tensorflow as tf
 from pathlib import Path
 
+tf.config.set_visible_devices([], "GPU")
+
 import tqdm
 
 from model.smolpi import Observation
