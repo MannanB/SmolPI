@@ -29,13 +29,14 @@ class Config(BaseModel):
     split: str = "train"
     shuffle_buffer: int = 2048
     prefetch_batches: int = 8
-    max_batches: int = 10000
+    max_batches: int = 20000
 
     # Periodic artifacts. Set either interval to 0 to disable it.
     checkpoint_every_batches: int = 1000
     video_every_batches: int = 1000
     checkpoint_dir: str = "/workspace/checkpoints"
     video_dir: str = "/workspace/vids"
+    resume_checkpoint: str | None = None
 
     use_wandb: bool = False
     wandb_project: str = "smolpi"

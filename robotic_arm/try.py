@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import sys
@@ -19,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from model.smolpi import Observation, SmolPI, SmolPIConfig
 
 
-PROMPT = "pick up the red box"
 ARM_JOINTS = (
     "waist",
     "shoulder",
@@ -32,6 +32,49 @@ ARM_JOINTS = (
 # approach axis 45 degrees downward instead of parallel to the floor.
 HOME_QPOS = np.array([0.0, -0.712953, 0.501707, 0.0, 0.996644, 0.0, 0.015, -0.015])
 HOME_CTRL = np.array([0.0, -0.712953, 0.501707, 0.0, 0.996644, 0.0, 0.015])
+
+
+@dataclass(frozen=True)
+class TaskSpec:
+    prompt: str
+    output_name: str
+    # Object positions make each task reproducible instead of depending on
+    # whatever layout happens to be encoded in the scene file.
+    object_xy: dict[str, tuple[float, float]]
+
+
+TASKS = {
+    "pick-red": TaskSpec(
+        prompt="pick up the red box",
+        output_name="smolpi_bridge_wx250s_pick_red_box.mp4",
+        object_xy={
+            "red_box": (0.34, 0.00),
+            "blue_box": (0.34, -0.08),
+            "green_box": (0.34, 0.08),
+        },
+    ),    
+    "push-red": TaskSpec(
+        prompt="push the red box",
+        output_name="smolpi_bridge_wx250s_push_red_box.mp4",
+        object_xy={
+            "blue_box": (0.27, -0.10),
+            "green_box": (0.43, -0.10),
+            "red_box": (0.34, 0.10),
+        },
+    ),
+    "push-blue-to-green": TaskSpec(
+        prompt="push the blue box next to the green box",
+        output_name="smolpi_bridge_wx250s_push_blue_to_green.mp4",
+        # Blue and green share a clear lane along the table's x axis. The red
+        # box is moved out of that lane so success requires controlled pushing,
+        # not obstacle avoidance or grasping.
+        object_xy={
+            "blue_box": (0.27, -0.10),
+            "green_box": (0.43, -0.10),
+            "red_box": (0.34, 0.10),
+        },
+    ),
+}
 
 
 class ActionNormalizer:
@@ -92,6 +135,7 @@ class Wx250sTrial:
         height: int,
         fps: int,
         show: bool,
+        task: TaskSpec,
     ) -> None:
         self.model = mujoco.MjModel.from_xml_path(str(scene_path.resolve()))
         self.data = mujoco.MjData(self.model)
@@ -101,8 +145,10 @@ class Wx250sTrial:
         self.height = height
         self.fps = fps
         self.show = show
+        self.task = task
 
         self.ee_site_id = self._id(mujoco.mjtObj.mjOBJ_SITE, "ee_site")
+        self.worktop_id = self._id(mujoco.mjtObj.mjOBJ_GEOM, "worktop")
         self.arm_joint_ids = np.array(
             [self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in ARM_JOINTS]
         )
@@ -135,6 +181,19 @@ class Wx250sTrial:
         self.data.qpos[:8] = HOME_QPOS
         self.data.ctrl[:] = HOME_CTRL
         mujoco.mj_forward(self.model, self.data)
+        self.work_surface_z = (
+            self.data.geom_xpos[self.worktop_id, 2]
+            + self.model.geom_size[self.worktop_id, 2]
+        )
+        for body_name, (x, y) in self.task.object_xy.items():
+            joint_id = self._id(
+                mujoco.mjtObj.mjOBJ_JOINT, f"{body_name}_freejoint"
+            )
+            geom_id = self._id(mujoco.mjtObj.mjOBJ_GEOM, f"{body_name}_geom")
+            qpos_address = self.model.jnt_qposadr[joint_id]
+            object_z = self.work_surface_z + self.model.geom_size[geom_id, 2]
+            self.data.qpos[qpos_address : qpos_address + 3] = (x, y, object_z)
+        mujoco.mj_forward(self.model, self.data)
 
     def render_camera(self, camera: str) -> np.ndarray:
         self.renderer.update_scene(self.data, camera=camera)
@@ -162,7 +221,7 @@ class Wx250sTrial:
         composite = np.concatenate([scene_bgr, scene_2_bgr, wrist_bgr], axis=1)
         cv2.putText(
             composite,
-            f'prompt: "{PROMPT}"   t={self.data.time:05.2f}s',
+            f'prompt: "{self.task.prompt}"   t={self.data.time:05.2f}s',
             (12, self.height - 16),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -195,7 +254,7 @@ class Wx250sTrial:
                 "content": [
                     {"type": "image"},
                     {"type": "image"},
-                    {"type": "text", "text": PROMPT},
+                    {"type": "text", "text": self.task.prompt},
                 ],
             }
         ]
@@ -225,7 +284,11 @@ class Wx250sTrial:
         start_position = self.ik_data.site_xpos[self.ee_site_id].copy()
         start_rotation = self.ik_data.site_xmat[self.ee_site_id].reshape(3, 3).copy()
         target_position = start_position + np.clip(action[:3], -0.04, 0.04)
-        target_position = np.clip(target_position, [0.10, -0.32, 0.015], [0.52, 0.32, 0.48])
+        target_position = np.clip(
+            target_position,
+            [0.10, -0.32, self.work_surface_z + 0.005],
+            [0.52, 0.32, 0.48],
+        )
         target_euler = rotation_matrix_to_euler_xyz(start_rotation) + np.clip(
             action[3:6], -0.25, 0.25
         )
@@ -326,13 +389,16 @@ def run(
         if processor.tokenizer.pad_token is None:
             processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
+    task = TASKS[args.task]
+    output = args.output or Path("vids") / task.output_name
     trial = Wx250sTrial(
         args.scene,
-        args.output,
+        output,
         width=args.width,
         height=args.height,
         fps=args.fps,
         show=args.show,
+        task=task,
     )
     sim_steps_per_action = max(
         1, round(1.0 / args.control_hz / float(trial.model.opt.timestep))
@@ -342,7 +408,7 @@ def run(
 
     execution_mode = "first action only" #if args.first_action_only else "full action chunk"
     print(
-        f"device={device} prompt={PROMPT!r} output={args.output} "
+        f"device={device} task={args.task!r} prompt={task.prompt!r} output={output} "
         f"execution={execution_mode}"
     )
     try:
@@ -390,7 +456,7 @@ def run(
                         break
     finally:
         trial.close()
-    print(f"recorded {args.output.resolve()}")
+    print(f"recorded {output.resolve()}")
 
 
 def record_policy(
@@ -400,8 +466,11 @@ def record_policy(
     processor=None,
     action_stats: Path = Path("action_stats.npz"),
     scene: Path = Path("world/wx_scene.xml"),
+    task: str = "pick-red",
 ) -> None:
-    """Record the standard red-box pickup trial for an in-memory policy."""
+    """Record one of the configured trials for an in-memory policy."""
+    if task not in TASKS:
+        raise ValueError(f"Unknown task {task!r}; choose from {sorted(TASKS)}")
     was_training = policy.training
     numpy_rng_state = np.random.get_state()
     torch_rng_state = torch.random.get_rng_state()
@@ -410,6 +479,7 @@ def record_policy(
         run(
             argparse.Namespace(
                 scene=scene,
+                task=task,
                 checkpoint=None,
                 action_stats=action_stats,
                 output=output,
@@ -437,6 +507,12 @@ def record_policy(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run and record SmolPI Bridge on WX250s")
     parser.add_argument("--scene", type=Path, default=Path("world/wx_scene.xml"))
+    parser.add_argument(
+        "--task",
+        choices=sorted(TASKS),
+        default="pick-red",
+        help="Manipulation task to run.",
+    )
     parser.add_argument("--checkpoint", type=Path, default=Path("smolpi_bridge.pth"))
     parser.add_argument(
         "--action-stats", type=Path, default=Path("action_stats.npz")
@@ -444,11 +520,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("vids/smolpi_bridge_wx250s_pick_red_box.mp4"),
+        default=None,
+        help="Output video path (defaults to a task-specific filename).",
     )
-    parser.add_argument("--duration", type=float, default=10.0)
+    parser.add_argument("--duration", type=float, default=15.0)
     parser.add_argument("--control-hz", type=float, default=5.0)
-    parser.add_argument("--flow-steps", type=int, default=24)
+    parser.add_argument("--flow-steps", type=int, default=14)
     parser.add_argument(
         "--first-action-only",
         action="store_true",

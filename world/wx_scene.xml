@@ -19,11 +19,27 @@
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
-    <camera name="scene_cam" mode="targetbody" target="red_box" pos="0.75 -0.75 0.55" fovy="52"/>
+    <camera name="scene_cam" mode="targetbody" target="red_box" pos="0.62 -0.50 0.52" fovy="48"/>
     <!-- Mirror of Bridge's elevated fixed depth camera, mounted on the
          robot's right side and aimed inward at the manipulation area. -->
     <camera name="scene_cam_2" mode="fixed" pos="0.10 -0.25 0.40"
       xyaxes="0.721387 -0.692532 0 0.508604 0.529796 0.678704" fovy="45"/>
+
+    <!-- A compact kitchen-style work table puts the manipulation area above
+         the floor and gives the cameras a bounded work surface like Bridge. -->
+    <body name="work_table">
+      <geom name="worktop" type="box" pos="0.32 0 0.10" size="0.27 0.25 0.015"
+        rgba="0.56 0.38 0.23 1" friction="1.2 0.01 0.001"/>
+      <geom name="table_leg_front_left" type="box" pos="0.08 -0.21 0.0425"
+        size="0.025 0.025 0.0425" rgba="0.16 0.14 0.12 1"/>
+      <geom name="table_leg_front_right" type="box" pos="0.08 0.21 0.0425"
+        size="0.025 0.025 0.0425" rgba="0.16 0.14 0.12 1"/>
+      <geom name="table_leg_back_left" type="box" pos="0.56 -0.21 0.0425"
+        size="0.025 0.025 0.0425" rgba="0.16 0.14 0.12 1"/>
+      <geom name="table_leg_back_right" type="box" pos="0.56 0.21 0.0425"
+        size="0.025 0.025 0.0425" rgba="0.16 0.14 0.12 1"/>
+    </body>
+
     <body name="red_box" pos="0.34 0 0.025">
       <freejoint name="red_box_freejoint"/>
       <geom name="red_box_geom" type="box" size="0.025 0.025 0.025"

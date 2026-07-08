@@ -111,7 +111,7 @@ def save_checkpoint(
         path,
     )
 
-def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config, optimizer: torch.optim.Optimizer):
+def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler) -> None:
 
     if cfg.checkpoint_every_batches < 0 or cfg.video_every_batches < 0:
         raise ValueError("Batch artifact intervals must be non-negative")
@@ -120,7 +120,6 @@ def train(policy: SmolPI, dataset: torch.utils.data.IterableDataset, cfg: Config
     if cfg.device.type != "cpu":
         amp_context = lambda: torch.autocast(device_type=cfg.device.type, dtype=cfg.smolpi.precision)
 
-    scheduler = build_lr_scheduler(optimizer, cfg)
     processor = AutoProcessor.from_pretrained(cfg.smolpi.smolvlm_id)
     processor.image_processor.do_image_splitting = False
     if processor.tokenizer.pad_token is None:
@@ -246,7 +245,20 @@ def main() -> None:
         shuffle_buffer=cfg.shuffle_buffer,
     )
 
-    train(policy, dataset, cfg, optimizer)
+    scheduler = build_lr_scheduler(optimizer, cfg)
+
+
+    if cfg.resume_checkpoint is not None:
+        checkpoint = torch.load(cfg["policy_state_dict"])
+        policy.load_state_dict(checkpoint["policy_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        # scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        start_epoch = checkpoint["epoch"]
+        start_batch = checkpoint["batch"]
+
+        print(f"Resumed from checkpoint: {cfg.resume_checkpoint} (epoch {start_epoch}, batch {start_batch})")
+
+    train(policy, dataset, cfg, optimizer, scheduler)
 
 
 if __name__ == "__main__":
