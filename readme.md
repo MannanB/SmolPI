@@ -4,6 +4,6 @@ SmolPI is an attempt to replicate the work of Physical Intelligence's [PI0 model
 
  The vision-language-action model (VLA) is based on the SmolVLM/SmolLM backbone. Similar to openpi, which used paligemma and the gemma architecutre, smolpi uses SmolVLM-256m for the vision model and SmolLM2-135m for the action expert. There are two environments: a simple two wheeled robot driving to different platforms, and a robotic arm trained on Berkeley's Bridge dataset
 
-<img width="640" height="480" alt="smolpi_bridge_wx250s_pick_red_box(3)" src="https://github.com/user-attachments/assets/8681e27e-d64d-45b2-b9d6-40a127340a65" />
+<img width="640" height="214" alt="smolpi_bridge_wx250s_pick_red_box(5)" src="https://github.com/user-attachments/assets/8e293e7f-e8c8-43fb-99d8-27c5a21373ac" />
 
 
