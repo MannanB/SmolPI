@@ -249,7 +249,7 @@ def main() -> None:
 
 
     if cfg.resume_checkpoint is not None:
-        checkpoint = torch.load(cfg["policy_state_dict"])
+        checkpoint = torch.load(cfg.resume_checkpoint)
         policy.load_state_dict(checkpoint["policy_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         # scheduler.load_state_dict(checkpoint["scheduler_state_dict"])

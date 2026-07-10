@@ -40,20 +40,26 @@
         size="0.025 0.025 0.0425" rgba="0.16 0.14 0.12 1"/>
     </body>
 
-    <body name="red_box" pos="0.34 0 0.025">
+    <body name="red_box" pos="0.34 0 0.133">
       <freejoint name="red_box_freejoint"/>
-      <geom name="red_box_geom" type="box" size="0.025 0.025 0.025"
-        mass="0.045" rgba="0.9 0.02 0.02 1" friction="1.2 0.01 0.001"/>
+      <geom name="red_box_geom" type="box" size="0.018 0.018 0.018"
+        mass="0.017" rgba="0.9 0.02 0.02 1" condim="6" priority="2"
+        friction="4.0 0.25 0.02" margin="0" gap="0"
+        solref="0.004 1" solimp="0.95 0.99 0.001"/>
     </body>
-    <body name="blue_box" pos="0.34 -0.08 0.025">
+    <body name="blue_box" pos="0.34 -0.08 0.133">
       <freejoint name="blue_box_freejoint"/>
-      <geom name="blue_box_geom" type="box" size="0.025 0.025 0.025"
-        mass="0.045" rgba="0.02 0.1 0.9 1" friction="1.2 0.01 0.001"/>
+      <geom name="blue_box_geom" type="box" size="0.018 0.018 0.018"
+        mass="0.017" rgba="0.02 0.1 0.9 1" condim="6" priority="2"
+        friction="4.0 0.25 0.02" margin="0" gap="0"
+        solref="0.004 1" solimp="0.95 0.99 0.001"/>
     </body>
-    <body name="green_box" pos="0.34 0.08 0.025">
+    <body name="green_box" pos="0.34 0.08 0.133">
       <freejoint name="green_box_freejoint"/>
-      <geom name="green_box_geom" type="box" size="0.025 0.025 0.025"
-        mass="0.045" rgba="0.02 0.75 0.08 1" friction="1.2 0.01 0.001"/>
+      <geom name="green_box_geom" type="box" size="0.018 0.018 0.018"
+        mass="0.017" rgba="0.02 0.75 0.08 1" condim="6" priority="2"
+        friction="4.0 0.25 0.02" margin="0" gap="0"
+        solref="0.004 1" solimp="0.95 0.99 0.001"/>
     </body>
   </worldbody>
 </mujoco>

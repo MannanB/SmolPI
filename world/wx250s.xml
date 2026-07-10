@@ -32,6 +32,12 @@
         <default class="sphere_collision">
           <geom type="sphere" size="0.0006" rgba="1 0 0 1"/>
         </default>
+        <default class="gripper_pad">
+          <geom type="box" size="0.009 0.0015 0.013" group="3"
+            condim="6" priority="2" friction="4.0 0.25 0.02"
+            margin="0" gap="0" solref="0.004 1" solimp="0.95 0.99 0.001"
+            rgba="0.02 0.02 0.02 1"/>
+        </default>
       </default>
     </default>
   </default>
@@ -90,6 +96,7 @@
                     <joint name="left_finger" axis="0 1 0" type="slide" range="0.015 0.037"/>
                     <geom pos="0 0.005 0" quat="0 0 0 -1" mesh="wx250s_10_gripper_finger" class="visual"/>
                     <geom pos="0 0.005 0" quat="0 0 0 -1" mesh="wx250s_10_gripper_finger" class="collision"/>
+                    <geom name="left_gripper_pad" pos="0.042 -0.009 0" class="gripper_pad"/>
                     <geom name="left/left_g0" pos="0.042 -0.009 0.012" class="sphere_collision"/>
                     <geom name="left/left_g1" pos="0.042 -0.009 -0.012" class="sphere_collision"/>
                   </body>
@@ -99,6 +106,7 @@
                     <joint name="right_finger" axis="0 1 0" type="slide" range="-0.037 -0.015"/>
                     <geom pos="0 -0.005 0" quat="0 0 1 0" mesh="wx250s_10_gripper_finger" class="visual"/>
                     <geom pos="0 -0.005 0" quat="0 0 1 0" mesh="wx250s_10_gripper_finger" class="collision"/>
+                    <geom name="right_gripper_pad" pos="0.042 0.009 0" class="gripper_pad"/>
                     <geom name="right/right_g0" pos="0.042 0.009 0.012" class="sphere_collision"/>
                     <geom name="right/right_g1" pos="0.042 0.009 -0.012" class="sphere_collision"/>
                   </body>
@@ -126,7 +134,7 @@
     <position class="wx250s" name="forearm_roll" joint="forearm_roll"/>
     <position class="wx250s" name="wrist_angle" joint="wrist_angle"/>
     <position class="wx250s" name="wrist_rotate" joint="wrist_rotate"/>
-    <position class="wx250s" name="gripper" joint="left_finger" kp="200"/>
+    <position class="wx250s" name="gripper" joint="left_finger" kp="500" forcerange="-80 80"/>
   </actuator>
 
   <keyframe>

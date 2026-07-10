@@ -253,7 +253,7 @@ class Wx250sTrial:
                 "role": "user",
                 "content": [
                     {"type": "image"},
-                    {"type": "image"},
+                    # {"type": "image"},
                     {"type": "text", "text": self.task.prompt},
                 ],
             }
@@ -265,7 +265,7 @@ class Wx250sTrial:
         )
         processed_inputs = processor(
             text=[formatted_prompt],
-            images=[[scene_rgb, scene_2_rgb]],
+            images=[[scene_2_rgb]],
             padding=True,
             return_tensors="pt",
         )
@@ -350,7 +350,7 @@ def load_policy(checkpoint_path: Path, device: torch.device) -> SmolPI:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Missing checkpoint: {checkpoint_path}")
     precision = torch.float16 if device.type == "cuda" else torch.float32
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     action_horizon = (
         int(checkpoint.get("action_horizon", 5))
         if isinstance(checkpoint, dict) and "policy_state_dict" in checkpoint
@@ -513,7 +513,7 @@ def parse_args() -> argparse.Namespace:
         default="pick-red",
         help="Manipulation task to run.",
     )
-    parser.add_argument("--checkpoint", type=Path, default=Path("smolpi_bridge.pth"))
+    parser.add_argument("--checkpoint", type=Path, default=Path("smolpi_bridge_rl_best.pth"))
     parser.add_argument(
         "--action-stats", type=Path, default=Path("action_stats.npz")
     )
