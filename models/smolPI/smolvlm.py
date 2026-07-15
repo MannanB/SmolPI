@@ -3,10 +3,8 @@ from typing import Literal
 
 import torch
 from torch import nn
-from transformers import LlamaForCausalLM, LlamaConfig
-from transformers import SmolVLMConfig
+from transformers import LlamaForCausalLM
 from transformers import SmolVLMForConditionalGeneration
-from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.llama import modeling_llama
 
 

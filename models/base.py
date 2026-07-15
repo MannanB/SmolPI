@@ -2,15 +2,15 @@ from abc import ABC, abstractmethod
 
 import torch
 
-class BaseModel(ABC):
+class BaseModel(torch.nn.Module, ABC):
     @abstractmethod
     def preprocess_observations(self, observations):
         ...
 
     @abstractmethod
-    def sample_actions(self, observation):
+    def sample_actions(self, observations):
         ...
 
     @abstractmethod
-    def bc_loss(self, observation, actual_action):
+    def bc_loss(self, observations, actual_action):
         ...

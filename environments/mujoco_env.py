@@ -1,4 +1,5 @@
 from environments.base import BaseEnvironment, make_writer
+from environments.factory import register_environment
 from core.config import MujocoEnvConfig
 from core.types import EnvObservation
 
@@ -17,6 +18,7 @@ def frame_to_tensor(rgb_frame: np.ndarray) -> torch.Tensor:
     frame = torch.from_numpy(rgb_frame).to("cpu")
     return frame
 
+@register_environment("Mujoco")
 class MujocoEnvironment(BaseEnvironment, ABC):
     def __init__(self, config: MujocoEnvConfig, control_freq_hz: float):
         self.config = config

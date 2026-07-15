@@ -7,12 +7,14 @@ from torch import nn
 import torch.nn.functional as F
 from transformers import LlamaConfig, SmolVLMConfig
 
-from pydantic import BaseModel, ConfigDict
+from torchvision.transforms import functional as TF
+from torchvision.transforms import InterpolationMode
 
 from core.config import SmolPIConfig
 from core.types import Observation
-from models.smolPI.smolvlm import SmolVLMWithExpertModel
+from models.smolpi.smolvlm import SmolVLMWithExpertModel
 from models.base import BaseModel
+from models.factory import register_model
 
 # thanks openpi / physical intelligence / pi0 for a lot of this code
 
@@ -109,18 +111,8 @@ def build_blockwise_attention_mask(attention_block_markers):
 
     return attention_mask, position_ids
 
-# class SmolPIConfig(BaseModel):
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-#     smolvlm_id: str = "HuggingFaceTB/SmolVLM-256M-Instruct"
-#     action_expert_id: str = "HuggingFaceTB/SmolLM2-135M"
-#     action_dim: int = 16
-#     action_horizon: int = 10
-#     precision: torch.dtype = torch.float16
-#     pytorch_compile_mode: str | None = None
-
-
-class SmolPI(nn.Module, BaseModel):
+@register_model("smolpi")
+class SmolPI(BaseModel):
     def __init__(self, config: SmolPIConfig):
         super().__init__()
         self.config = config
@@ -178,9 +170,155 @@ class SmolPI(nn.Module, BaseModel):
         """Convert [batch, query, key] visibility to a transformer mask."""
         attention_mask = attention_mask[:, None, :, :]
         return torch.where(attention_mask, 0.0, -2.3819763e38)
-    
-    def preprocess_observations(self, observations: list[Observation]):
         
+    def preprocess_observations(
+        self,
+        observations: list[Observation],
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        if not observations:
+            raise ValueError("observations cannot be empty")
+
+        processor = self.processor
+        processor.image_processor.do_image_splitting = False
+
+        device = next(self.parameters()).device
+        batch_size = len(observations)
+
+        # Build prompts with one image token per camera.
+        batch_messages = [
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        [{"type": "image"} for _ in observation.env.images]
+                        + [{"type": "text", "text": observation.prompt.strip()}]
+                    ),
+                }
+            ]
+            for observation in observations
+        ]
+
+        batch_prompts = processor.apply_chat_template(
+            batch_messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+
+        image_prompt = (
+            processor.fake_image_token
+            + processor.global_image_tag
+            + processor.image_token * processor.image_seq_len
+            + processor.fake_image_token
+        )
+
+        batch_prompts = [
+            prompt.replace(processor.image_token, image_prompt)
+            for prompt in batch_prompts
+        ]
+
+        batch_inputs = dict(
+            processor.tokenizer(
+                batch_prompts,
+                padding=True,
+                return_tensors="pt",
+            )
+        )
+
+        num_images = [len(observation.env.images) for observation in observations]
+
+        if any(count == 0 for count in num_images):
+            raise ValueError("Every observation must contain at least one image")
+
+        if any(count > 2 for count in num_images):
+            raise ValueError("At most two camera images are supported")
+
+        max_num_images = max(num_images)
+        image_size = processor.image_processor.max_image_size["longest_edge"]
+
+        pixel_values = torch.zeros(
+            batch_size,
+            max_num_images,
+            3,
+            image_size,
+            image_size,
+            dtype=torch.float32,
+        )
+
+        pixel_attention_mask = torch.zeros(
+            batch_size,
+            max_num_images,
+            image_size,
+            image_size,
+            dtype=torch.bool,
+        )
+
+        for batch_index, observation in enumerate(observations):
+            for image_index, image in enumerate(observation.env.images):
+                image = image.detach().cpu()
+
+                if image.ndim != 3:
+                    raise ValueError(
+                        f"Expected a 3D RGB image, received shape {tuple(image.shape)}"
+                    )
+
+                # Accept both CHW and HWC RGB tensors.
+                if image.shape[0] == 3:
+                    pass
+                elif image.shape[-1] == 3:
+                    image = image.permute(2, 0, 1)
+                else:
+                    raise ValueError(
+                        f"Expected an RGB image, received shape {tuple(image.shape)}"
+                    )
+
+                image = image.to(torch.float32)
+
+                image = TF.resize(
+                    image,
+                    [image_size, image_size],
+                    interpolation=InterpolationMode.BICUBIC,
+                    antialias=True,
+                )
+
+                minimum = image.amin().item()
+                maximum = image.amax().item()
+
+                # Normalize RGB values to [-1, 1].
+                if minimum >= 0.0 and maximum <= 1.0:
+                    image = image.mul(2.0).sub(1.0)
+                elif minimum >= -1.0 and maximum <= 1.0:
+                    # Already normalized.
+                    pass
+                else:
+                    image = image.clamp(0.0, 255.0).div(127.5).sub(1.0)
+
+                pixel_values[batch_index, image_index] = image
+                pixel_attention_mask[batch_index, image_index] = True
+
+        robot_state = torch.stack(
+            [
+                observation.env.robot_state.detach().cpu().to(torch.float32)
+                for observation in observations
+            ]
+        )
+
+        batch_inputs["pixel_values"] = pixel_values
+        batch_inputs["pixel_attention_mask"] = pixel_attention_mask
+
+        if device.type == "cuda":
+            batch_inputs = {
+                key: value.pin_memory()
+                for key, value in batch_inputs.items()
+            }
+            robot_state = robot_state.pin_memory()
+
+        batch_inputs = {
+            key: value.to(device=device, non_blocking=True)
+            for key, value in batch_inputs.items()
+        }
+        robot_state = robot_state.to(device=device, non_blocking=True)
+
+        return batch_inputs, robot_state
     
     def embed_prefix(self, inputs):
         # Process language tokens
@@ -268,7 +406,7 @@ class SmolPI(nn.Module, BaseModel):
 
         return embs, attention_block_markers
     
-    def forward(self, observation, actions, noise=None, time=None) -> Tensor:
+    def forward(self, processed_inputs, states, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
         if noise is None:
             noise = sample_noise(actions.shape, actions.device)
@@ -280,16 +418,21 @@ class SmolPI(nn.Module, BaseModel):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        prefix_embs, prefix_block_markers = self.embed_prefix(observation.processed_inputs)
+        prefix_embs, prefix_block_markers = self.embed_prefix(processed_inputs)
 
         v_t = self._predict_velocity_from_prefix(
             prefix_embs,
             prefix_block_markers,
-            observation.state,
+            states,
             x_t,
             time,
         )
         return F.mse_loss(u_t, v_t, reduction="none")
+    
+    def bc_loss(self, observations, actual_action):
+        """Compute the behavior cloning loss (batch_size x num_steps x num_motors)"""
+        processed_inputs, states = self.preprocess_observations(observations)
+        return self.forward(processed_inputs, states, actual_action)
 
     def _predict_velocity_from_prefix(
         self,
@@ -341,18 +484,21 @@ class SmolPI(nn.Module, BaseModel):
     @torch.no_grad()
     def sample_actions(
         self,
-        observation,
+        observations,
         noise=None,
     ) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
-        bsize = observation.state.shape[0]
+
+        processed_inputs, states = self.preprocess_observations(observations)
+
+        bsize = states.shape[0]
         if noise is None:
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = sample_noise(actions_shape, self.device)
 
         # print(noise.shape, sample_noise((bsize, self.config.action_horizon, self.config.action_dim), device).shape)
 
-        prefix_embs, prefix_block_markers = self.embed_prefix(observation.processed_inputs)
+        prefix_embs, prefix_block_markers = self.embed_prefix(processed_inputs)
 
         valid_prefix_tokens = prefix_block_markers != PADDING_MARKER
         prefix_attention_mask, prefix_position_ids = build_blockwise_attention_mask(
@@ -388,7 +534,7 @@ class SmolPI(nn.Module, BaseModel):
             step_key_values = copy.deepcopy(past_key_values)
 
             v_t = self.denoise_step(
-                observation.state,
+                states,
                 valid_prefix_tokens,
                 step_key_values,
                 x_t,
