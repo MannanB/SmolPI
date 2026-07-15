@@ -1,7 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cu128
-
+x 
 beautifulsoup4==4.13.4
-bitsandbytes==0.46.1
+# bitsandbytes==0.46.1
 matplotlib==3.10.3
 mujoco==3.8.0
 numpy==2.2.6
@@ -11,7 +10,7 @@ pydantic==2.11.5
 requests==2.34.2
 tensorflow==2.21.0
 tensorflow-datasets==4.9.10
-torch==2.8.0+cu128
+torch==2.8.0
 tqdm==4.68.3
 transformers==4.55.0
 wandb==0.23.1

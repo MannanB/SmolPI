@@ -9,8 +9,10 @@ from transformers import LlamaConfig, SmolVLMConfig
 
 from pydantic import BaseModel, ConfigDict
 
-from model.smolvlm import SmolVLMWithExpertModel
-
+from core.config import SmolPIConfig
+from core.types import Observation
+from models.smolPI.smolvlm import SmolVLMWithExpertModel
+from models.base import BaseModel
 
 # thanks openpi / physical intelligence / pi0 for a lot of this code
 
@@ -107,27 +109,19 @@ def build_blockwise_attention_mask(attention_block_markers):
 
     return attention_mask, position_ids
 
-class SmolPIConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+# class SmolPIConfig(BaseModel):
+#     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    smolvlm_id: str = "HuggingFaceTB/SmolVLM-256M-Instruct"
-    action_expert_id: str = "HuggingFaceTB/SmolLM2-135M"
-    action_dim: int = 16
-    action_horizon: int = 10
-    precision: torch.dtype = torch.float16
-    pytorch_compile_mode: str | None = None
+#     smolvlm_id: str = "HuggingFaceTB/SmolVLM-256M-Instruct"
+#     action_expert_id: str = "HuggingFaceTB/SmolLM2-135M"
+#     action_dim: int = 16
+#     action_horizon: int = 10
+#     precision: torch.dtype = torch.float16
+#     pytorch_compile_mode: str | None = None
 
-class Observation(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # images: dict[str, torch.Tensor]
-    # prompt: str
-
-    processed_inputs: object
-    state: torch.Tensor
-
-class SmolPI(nn.Module):
-    def __init__(self, config):
+class SmolPI(nn.Module, BaseModel):
+    def __init__(self, config: SmolPIConfig):
         super().__init__()
         self.config = config
 
@@ -184,6 +178,9 @@ class SmolPI(nn.Module):
         """Convert [batch, query, key] visibility to a transformer mask."""
         attention_mask = attention_mask[:, None, :, :]
         return torch.where(attention_mask, 0.0, -2.3819763e38)
+    
+    def preprocess_observations(self, observations: list[Observation]):
+        
     
     def embed_prefix(self, inputs):
         # Process language tokens
@@ -344,17 +341,14 @@ class SmolPI(nn.Module):
     @torch.no_grad()
     def sample_actions(
         self,
-        device,
         observation,
         noise=None,
-        num_steps=10,
-
     ) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = observation.state.shape[0]
         if noise is None:
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
-            noise = sample_noise(actions_shape, device)
+            noise = sample_noise(actions_shape, self.device)
 
         # print(noise.shape, sample_noise((bsize, self.config.action_horizon, self.config.action_dim), device).shape)
 
@@ -377,17 +371,17 @@ class SmolPI(nn.Module):
             use_cache=True,
         )
 
-        dt = 1.0 / num_steps
-        dt = torch.tensor(dt, dtype=torch.float32, device=device)
+        dt = 1.0 / self.config.num_flow_steps
+        dt = torch.tensor(dt, dtype=torch.float32, device=self.device)
 
         x_t = noise
-        time = torch.tensor(1.0, dtype=torch.float32, device=device)
+        time = torch.tensor(1.0, dtype=torch.float32, device=self.device)
 
-        for step in range(num_steps):
+        for step in range(self.config.num_flow_steps):
             time = torch.full(
                 (bsize,),
                 1.0 - step * dt,
-                device=device,
+                device=self.device,
                 dtype=torch.float32,
             )
 
