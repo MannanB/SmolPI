@@ -9,6 +9,7 @@ import wandb
 from algorithms.base import BaseAlgorithm
 from algorithms.factory import register_algorithm
 from core.config import BehaviorCloningConfig
+from environments.base import BaseEnvironment
 from models.base import BaseModel
 
 
@@ -20,6 +21,7 @@ class BehaviorCloningTrainer(BaseAlgorithm):
         policy: BaseModel,
         device: torch.device,
         wandb_run: wandb.Run | None = None,
+        environment: BaseEnvironment | None = None,
     ) -> None:
         self.policy = policy
         self.config = config

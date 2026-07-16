@@ -1,6 +1,7 @@
 # Default SmolPI training configuration.
 model:
-  name: SmolPI
+  # The model registry uses the lowercase key below.
+  name: smolpi
   action_dim: 7
   action_horizon: 10
   precision: float16
@@ -35,6 +36,7 @@ algorithm:
   use_8bit_adam: false
 
 environment:
+  # Selects the registered MujocoEnvironment implementation.
   name: Mujoco
   xml_path: environments/worlds/wx_scene.xml
   observation_cams: ["scene_cam", "scene_cam_2"]

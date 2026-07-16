@@ -1,4 +1,9 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+
+import torch
+
+from core.types import EnvObservation
 
 import cv2
 
@@ -20,7 +25,12 @@ class BaseEnvironment(ABC):
     def step(self, action): ...
 
     @abstractmethod
-    def rollout(self, seconds, action_horizon): ...
+    def rollout(
+        self,
+        seconds: float,
+        action_horizon: int,
+        get_action: Callable[[list[EnvObservation]], torch.Tensor],
+    ) -> list[list[float]]: ...
 
     @abstractmethod
     def close(self): ...

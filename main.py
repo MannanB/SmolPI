@@ -30,7 +30,13 @@ def main() -> None:
             config=asdict(config),
         )
 
-    algorithm = create_algorithm(config.algorithm, model, config.device, wandb_run)
+    algorithm = create_algorithm(
+        config.algorithm,
+        model,
+        config.device,
+        wandb_run,
+        environment,
+    )
 
     algorithm.train(dataloader)
 

@@ -106,6 +106,9 @@ class MujocoEnvironment(BaseEnvironment, ABC):
                 bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
                 self.cam_writers[i].write(bgr)
 
+    @abstractmethod
+    def get_reward(self, data: mujoco.MjData) -> float: ...
+
     def step(
         self,
         actions: list[torch.Tensor] | torch.Tensor,
@@ -139,10 +142,18 @@ class MujocoEnvironment(BaseEnvironment, ABC):
 
         obs = self.get_observations()
 
+        rewards = []
+
         for chunk in range(num_chunks):
             actions = get_action(obs)
             for i in range(action_horizon):
-                obs = self.step(actions[i], chunk * action_horizon + i * self.steps_per_control)
+                obs = self.step(
+                    actions[:, i],
+                    step_n=chunk * action_horizon + i * self.steps_per_control,
+                )
+
+            rewards.append([self.get_reward(data) for data in self.datas])
+        return rewards
 
     def close(self):
         self.end_camera_rendering()

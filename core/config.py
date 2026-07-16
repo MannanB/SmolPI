@@ -96,6 +96,38 @@ class BehaviorCloningConfig(AlgorithmConfig):
 
 
 @dataclass
+class FPORLConfig(AlgorithmConfig):
+    name: ClassVar[str] = "FPORL"
+
+    prompt: str = ""
+    episodes_per_update: int = 8
+    rollout_seconds: float = 8.0
+    train_epochs: int = 2
+    batch_size: int = 8
+
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    reward_scale: float = 50.0
+    exploration_std: float = 0.5
+
+    awr_temperature: float = 1.0
+    max_awr_weight: float = 20.0
+    advantage_filter: str = "positive"
+    advantage_quantile: float = 0.6
+
+    value_learning_rate: float = 1e-4
+    weight_decay: float = 1e-4
+    max_grad_norm: float = 1.0
+    value_max_grad_norm: float = 0.5
+    value_hidden_dim: int = 256
+    value_huber_delta: float = 1.0
+    value_target_clip: float = 10.0
+    action_clip: float = 5.0
+
+    use_amp: bool = True
+
+
+@dataclass
 class RunConfig:
     model: ModelConfig
     dataset: DatasetConfig

@@ -95,14 +95,6 @@ class Wx250sEnvironment(MujocoEnvironment):
         action[6]   = gripper command in [0, 1]
     """
 
-    @property
-    def data(self) -> list[mujoco.MjData]:
-        """
-        Compatibility alias for MujocoEnvironment methods that reference
-        self.data instead of self.datas.
-        """
-        return self.datas
-
     def _id(self, object_type: mujoco.mjtObj, name: str) -> int:
         object_id = mujoco.mj_name2id(self.model, object_type, name)
 
