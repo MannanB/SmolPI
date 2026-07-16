@@ -1,15 +1,15 @@
 # main.py
 import argparse
-
-from core.config import load_config
-
-from environments import create_environment
-from models import create_model
-from algorithms import create_algorithm
-from datasets import create_dataloader
+from dataclasses import asdict
 
 import wandb
-from dataclasses import asdict
+
+from algorithms import create_algorithm
+from core.config import load_config
+from datasets import create_dataloader
+from environments import create_environment
+from models import create_model
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -17,7 +17,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    
+
     model = create_model(config.model).to(config.device)
     environment = create_environment(config.environment)
     dataloader = create_dataloader(config.dataset)
@@ -27,7 +27,7 @@ def main() -> None:
         wandb_run = wandb.init(
             project=config.wandb_project,
             name=config.wandb_run_name,
-            config=asdict(config)
+            config=asdict(config),
         )
 
     algorithm = create_algorithm(config.algorithm, model, config.device, wandb_run)

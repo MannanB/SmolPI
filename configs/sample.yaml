@@ -1,0 +1,49 @@
+# Default SmolPI training configuration.
+model:
+  name: SmolPI
+  action_dim: 7
+  action_horizon: 10
+  precision: float16
+  smolvlm_id: HuggingFaceTB/SmolVLM-256M-Instruct
+  action_expert_id: HuggingFaceTB/SmolLM2-135M
+  num_flow_steps: 10
+
+dataset:
+  name: Bridge
+  dataset_path: datasets/data/bridge_dataset
+  stats_path: datasets/data/bridge_dataset/action_stats.npz
+  split: train
+  batch_size: 1
+  shuffle_buffer: 1000
+  prefetch_factor: 2
+  num_workers: 4
+  pin_memory: true
+
+algorithm:
+  name: BehaviorCloning
+  epochs: 10
+  max_batches_per_epoch: null
+  checkpoint_every_steps: 1000
+  checkpoint_dir: checkpoints
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_accum_steps: 1
+  max_grad_norm: 1.0
+  warmup_steps: 500
+  min_lr_ratio: 0.1
+  use_amp: true
+  use_8bit_adam: false
+
+environment:
+  name: Mujoco
+  xml_path: environments/worlds/wx_scene.xml
+  observation_cams: ["scene_cam", "scene_cam_2"]
+  render_cams: ["scene_cam", "scene_cam_2"]
+  render_env: 0
+  vid_output_dir: vids/wx250s/
+  num_parallel_envs: 1
+
+device: cuda
+use_wandb: false
+wandb_project: smolpi
+wandb_run_name: null

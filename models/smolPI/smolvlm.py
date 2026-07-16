@@ -1,19 +1,24 @@
-
 from typing import Literal
 
 import torch
 from torch import nn
-from transformers import LlamaForCausalLM
-from transformers import SmolVLMForConditionalGeneration
+from transformers import LlamaForCausalLM, SmolVLMForConditionalGeneration
 from transformers.models.llama import modeling_llama
 
 
 class SmolVLMWithExpertModel(nn.Module):
-    def __init__(self, smolvlm_id, vlm_config_hf, action_expert_config_hf, \
-                 precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16"):
+    def __init__(
+        self,
+        smolvlm_id,
+        vlm_config_hf,
+        action_expert_config_hf,
+        precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16",
+    ):
         super().__init__()
 
-        self.smolvlm = SmolVLMForConditionalGeneration.from_pretrained(smolvlm_id, config=vlm_config_hf).to(precision)
+        self.smolvlm = SmolVLMForConditionalGeneration.from_pretrained(
+            smolvlm_id, config=vlm_config_hf
+        ).to(precision)
 
         self.action_expert = LlamaForCausalLM(config=action_expert_config_hf)
 
@@ -49,7 +54,8 @@ class SmolVLMWithExpertModel(nn.Module):
                 param.data = param.data.to(dtype=torch.float32)
 
     def to_bfloat16_for_selected_params(
-        self, precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16"
+        self,
+        precision: Literal["bfloat16", "float16", "float32"] | torch.dtype = "bfloat16",
     ):
         if isinstance(precision, torch.dtype):
             if precision == torch.bfloat16:
@@ -80,16 +86,17 @@ class SmolVLMWithExpertModel(nn.Module):
             "model.text_model.norm",
             "action_expert.model.norm",
             "model.norm",
-            "layer_norm"
+            "layer_norm",
         ]
-
 
         for name, param in self.named_parameters():
             if any(selector in name for selector in params_to_keep_float32):
                 param.data = param.data.to(dtype=torch.float32)
 
     def embed_image(self, pixel_values: torch.Tensor, pixel_attention_mask: torch.Tensor | None):
-        return self.smolvlm.model.get_image_features(pixel_values, pixel_attention_mask).to(pixel_values.device)
+        return self.smolvlm.model.get_image_features(pixel_values, pixel_attention_mask).to(
+            pixel_values.device
+        )
 
     def embed_language_tokens(self, tokens: torch.Tensor):
         return self.smolvlm.model.get_input_embeddings()(tokens).to(tokens.device)
@@ -170,9 +177,17 @@ class SmolVLMWithExpertModel(nn.Module):
                     query_shape = (*input_shape, num_heads, head_dim)
                     kv_shape = (*input_shape, num_kv_heads, head_dim)
 
-                    query_state = layer.self_attn.q_proj(normed_hidden_states).view(query_shape).transpose(1, 2)
-                    key_state = layer.self_attn.k_proj(normed_hidden_states).view(kv_shape).transpose(1, 2)
-                    value_state = layer.self_attn.v_proj(normed_hidden_states).view(kv_shape).transpose(1, 2)
+                    query_state = (
+                        layer.self_attn.q_proj(normed_hidden_states)
+                        .view(query_shape)
+                        .transpose(1, 2)
+                    )
+                    key_state = (
+                        layer.self_attn.k_proj(normed_hidden_states).view(kv_shape).transpose(1, 2)
+                    )
+                    value_state = (
+                        layer.self_attn.v_proj(normed_hidden_states).view(kv_shape).transpose(1, 2)
+                    )
 
                     query_states.append(query_state)
                     key_states.append(key_state)

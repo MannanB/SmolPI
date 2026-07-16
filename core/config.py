@@ -1,12 +1,16 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
-from core.types import Camera
+
 import torch
+
+from core.types import Camera
+
 
 @dataclass
 class EnvironmentConfig:
     name: str
+
 
 @dataclass
 class MujocoEnvConfig(EnvironmentConfig):
@@ -20,10 +24,12 @@ class MujocoEnvConfig(EnvironmentConfig):
 
     num_parallel_envs: int = 1
 
+
 @dataclass
 class RealRobotConfig(EnvironmentConfig):
     name: ClassVar[str] = "RealRobot"
     ip: str
+
 
 @dataclass
 class ModelConfig:
@@ -33,12 +39,14 @@ class ModelConfig:
 
     precision: torch.dtype = torch.float16
 
+
 @dataclass
 class SmolPIConfig(ModelConfig):
     name: ClassVar[str] = "SmolPI"
     smolvlm_id: str = "HuggingFaceTB/SmolVLM-256M-Instruct"
     action_expert_id: str = "HuggingFaceTB/SmolLM2-135M"
     num_flow_steps: int = 10
+
 
 @dataclass
 class DatasetConfig:
@@ -51,6 +59,7 @@ class DatasetConfig:
     num_workers: int = 4
     pin_memory: bool = True
 
+
 @dataclass
 class BridgeDatasetConfig(DatasetConfig):
     name: ClassVar[str] = "Bridge"
@@ -58,8 +67,9 @@ class BridgeDatasetConfig(DatasetConfig):
     split: str
     shuffle_buffer: int
 
+
 @dataclass
-class AlgorithmConfig: # shared algo traits
+class AlgorithmConfig:  # shared algo traits
     name: str
     epochs: int = 10
     max_batches_per_epoch: int | None = None
@@ -68,6 +78,7 @@ class AlgorithmConfig: # shared algo traits
     checkpoint_dir: Path = Path("checkpoints")
 
     learning_rate: float = 1e-4
+
 
 @dataclass
 class BehaviorCloningConfig(AlgorithmConfig):
@@ -83,6 +94,7 @@ class BehaviorCloningConfig(AlgorithmConfig):
     use_amp: bool = True
     use_8bit_adam: bool = False
 
+
 @dataclass
 class RunConfig:
     model: ModelConfig
@@ -96,10 +108,11 @@ class RunConfig:
     wandb_project: str = "smolpi"
     wandb_run_name: str | None = None
 
+
 def load_config(config_path: str) -> RunConfig:
     import yaml
 
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         config_dict = yaml.safe_load(f)
 
     model_cfg = ModelConfig(**config_dict["model"])
@@ -112,7 +125,9 @@ def load_config(config_path: str) -> RunConfig:
         dataset=dataset_cfg,
         algorithm=algorithm_cfg,
         environment=env_cfg,
-        device=torch.device(config_dict.get("device", "cuda" if torch.cuda.is_available() else "cpu")),
+        device=torch.device(
+            config_dict.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        ),
         use_wandb=config_dict.get("use_wandb", False),
         wandb_project=config_dict.get("wandb_project", "robot-training"),
         wandb_run_name=config_dict.get("wandb_run_name"),

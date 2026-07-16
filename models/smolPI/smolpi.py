@@ -1,22 +1,22 @@
+import copy
 import logging
 import math
-import copy
-import torch
-from torch import Tensor
-from torch import nn
-import torch.nn.functional as F
-from transformers import LlamaConfig, SmolVLMConfig
 
-from torchvision.transforms import functional as TF
+import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
 from torchvision.transforms import InterpolationMode
+from torchvision.transforms import functional as TF
+from transformers import LlamaConfig, SmolVLMConfig
 
 from core.config import SmolPIConfig
 from core.types import Observation
-from models.smolpi.smolvlm import SmolVLMWithExpertModel
 from models.base import BaseModel
 from models.factory import register_model
+from models.smolpi.smolvlm import SmolVLMWithExpertModel
 
 # thanks openpi / physical intelligence / pi0 for a lot of this code
+
 
 def get_safe_dtype(target_dtype, device_type):
     """Get a safe dtype for the given device type."""
@@ -28,8 +28,13 @@ def get_safe_dtype(target_dtype, device_type):
             return torch.float64
     return target_dtype
 
+
 def create_sinusoidal_pos_embedding(
-    time: torch.tensor, dimension: int, min_period: float, max_period: float, device="cpu"
+    time: torch.tensor,
+    dimension: int,
+    min_period: float,
+    max_period: float,
+    device="cpu",
 ) -> Tensor:
     """Computes sine-cosine positional embedding vectors for scalar positions."""
     if dimension % 2 != 0:
@@ -47,11 +52,13 @@ def create_sinusoidal_pos_embedding(
     sin_input = scaling_factor[None, :] * time[:, None]
     return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
 
+
 def sample_beta(alpha, beta, bsize, device):
     alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=device)
     beta_t = torch.as_tensor(beta, dtype=torch.float32, device=device)
     dist = torch.distributions.Beta(alpha_t, beta_t)
     return dist.sample((bsize,))
+
 
 def sample_noise(shape, device):
     return torch.normal(
@@ -62,10 +69,12 @@ def sample_noise(shape, device):
         device=device,
     )
 
+
 def sample_time(bsize, device):
     time_beta = sample_beta(1.5, 1.0, bsize, device)
     time = time_beta * 0.99 + 0.01
     return time.to(dtype=torch.float32, device=device)
+
 
 PADDING_MARKER = -1
 CONTINUE_ATTENTION_BLOCK = 0
@@ -94,9 +103,7 @@ def build_blockwise_attention_mask(attention_block_markers):
     valid_token_mask = attention_block_markers != PADDING_MARKER
 
     # Padding must not increment the cumulative block number.
-    block_starts = attention_block_markers.masked_fill(
-        ~valid_token_mask, CONTINUE_ATTENTION_BLOCK
-    )
+    block_starts = attention_block_markers.masked_fill(~valid_token_mask, CONTINUE_ATTENTION_BLOCK)
     block_ids = torch.cumsum(block_starts, dim=1)
 
     query_block_ids = block_ids[:, :, None]
@@ -111,15 +118,20 @@ def build_blockwise_attention_mask(attention_block_markers):
 
     return attention_mask, position_ids
 
+
 @register_model("smolpi")
 class SmolPI(BaseModel):
     def __init__(self, config: SmolPIConfig):
         super().__init__()
         self.config = config
 
-        vlm_config = SmolVLMConfig.from_pretrained(config.smolvlm_id) # HuggingFaceTB/SmolVLM-256M-Instruct
-        action_expert_config = LlamaConfig.from_pretrained(config.action_expert_id) # HuggingFaceTB/SmolLM2-135M
-        
+        vlm_config = SmolVLMConfig.from_pretrained(
+            config.smolvlm_id
+        )  # HuggingFaceTB/SmolVLM-256M-Instruct
+        action_expert_config = LlamaConfig.from_pretrained(
+            config.action_expert_id
+        )  # HuggingFaceTB/SmolLM2-135M
+
         self.smolvlm_with_expert = SmolVLMWithExpertModel(
             config.smolvlm_id,
             vlm_config,
@@ -131,9 +143,13 @@ class SmolPI(BaseModel):
         self.action_out_proj = nn.Linear(action_expert_config.hidden_size, config.action_dim)
 
         self.state_proj = nn.Linear(config.action_dim, action_expert_config.hidden_size)
-        self.action_time_mlp_in = nn.Linear(2 * action_expert_config.hidden_size, action_expert_config.hidden_size)
-        self.action_time_mlp_out = nn.Linear(action_expert_config.hidden_size, action_expert_config.hidden_size)
-        
+        self.action_time_mlp_in = nn.Linear(
+            2 * action_expert_config.hidden_size, action_expert_config.hidden_size
+        )
+        self.action_time_mlp_out = nn.Linear(
+            action_expert_config.hidden_size, action_expert_config.hidden_size
+        )
+
         self.dtype = config.precision
         self.gradient_checkpointing_enable()
 
@@ -170,7 +186,7 @@ class SmolPI(BaseModel):
         """Convert [batch, query, key] visibility to a transformer mask."""
         attention_mask = attention_mask[:, None, :, :]
         return torch.where(attention_mask, 0.0, -2.3819763e38)
-        
+
     def preprocess_observations(
         self,
         observations: list[Observation],
@@ -212,8 +228,7 @@ class SmolPI(BaseModel):
         )
 
         batch_prompts = [
-            prompt.replace(processor.image_token, image_prompt)
-            for prompt in batch_prompts
+            prompt.replace(processor.image_token, image_prompt) for prompt in batch_prompts
         ]
 
         batch_inputs = dict(
@@ -267,9 +282,7 @@ class SmolPI(BaseModel):
                 elif image.shape[-1] == 3:
                     image = image.permute(2, 0, 1)
                 else:
-                    raise ValueError(
-                        f"Expected an RGB image, received shape {tuple(image.shape)}"
-                    )
+                    raise ValueError(f"Expected an RGB image, received shape {tuple(image.shape)}")
 
                 image = image.to(torch.float32)
 
@@ -306,20 +319,16 @@ class SmolPI(BaseModel):
         batch_inputs["pixel_attention_mask"] = pixel_attention_mask
 
         if device.type == "cuda":
-            batch_inputs = {
-                key: value.pin_memory()
-                for key, value in batch_inputs.items()
-            }
+            batch_inputs = {key: value.pin_memory() for key, value in batch_inputs.items()}
             robot_state = robot_state.pin_memory()
 
         batch_inputs = {
-            key: value.to(device=device, non_blocking=True)
-            for key, value in batch_inputs.items()
+            key: value.to(device=device, non_blocking=True) for key, value in batch_inputs.items()
         }
         robot_state = robot_state.to(device=device, non_blocking=True)
 
         return batch_inputs, robot_state
-    
+
     def embed_prefix(self, inputs):
         # Process language tokens
         def lang_embed_func(lang_tokens):
@@ -328,7 +337,9 @@ class SmolPI(BaseModel):
 
         lang_emb = self._apply_checkpoint(lang_embed_func, inputs.input_ids)
 
-        image_hidden_states = self.smolvlm_with_expert.embed_image(inputs.pixel_values, inputs.pixel_attention_mask)
+        image_hidden_states = self.smolvlm_with_expert.embed_image(
+            inputs.pixel_values, inputs.pixel_attention_mask
+        )
 
         embs = self.smolvlm_with_expert.smolvlm.model.inputs_merger(
             input_ids=inputs.input_ids,
@@ -368,7 +379,11 @@ class SmolPI(BaseModel):
 
         # Embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
         time_emb = create_sinusoidal_pos_embedding(
-            timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=timestep.device
+            timestep,
+            self.action_in_proj.out_features,
+            min_period=4e-3,
+            max_period=4.0,
+            device=timestep.device,
         )
         time_emb = time_emb.type(dtype=timestep.dtype)
 
@@ -405,7 +420,7 @@ class SmolPI(BaseModel):
         attention_block_markers = attention_block_markers[None, :].expand(bsize, -1)
 
         return embs, attention_block_markers
-    
+
     def forward(self, processed_inputs, states, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
         if noise is None:
@@ -428,7 +443,7 @@ class SmolPI(BaseModel):
             time,
         )
         return F.mse_loss(u_t, v_t, reduction="none")
-    
+
     def bc_loss(self, observations, actual_action):
         """Compute the behavior cloning loss (batch_size x num_steps x num_motors)"""
         processed_inputs, states = self.preprocess_observations(observations)
@@ -448,9 +463,7 @@ class SmolPI(BaseModel):
         suffix_embs = suffix_embs.to(dtype=self.dtype)
         prefix_embs = prefix_embs.to(dtype=self.dtype)
 
-        attention_block_markers = torch.cat(
-            [prefix_block_markers, suffix_block_markers], dim=1
-        )
+        attention_block_markers = torch.cat([prefix_block_markers, suffix_block_markers], dim=1)
 
         attention_mask, position_ids = build_blockwise_attention_mask(attention_block_markers)
 
@@ -469,7 +482,11 @@ class SmolPI(BaseModel):
             return suffix_out
 
         suffix_out = self._apply_checkpoint(
-            forward_func, prefix_embs, suffix_embs, additive_attention_mask, position_ids
+            forward_func,
+            prefix_embs,
+            suffix_embs,
+            additive_attention_mask,
+            position_ids,
         )
 
         suffix_out = suffix_out[:, -self.config.action_horizon :]
@@ -506,9 +523,7 @@ class SmolPI(BaseModel):
         )
 
         # Compute the image/language KV cache once and reuse it for every flow step.
-        additive_prefix_attention_mask = self._to_additive_attention_mask(
-            prefix_attention_mask
-        )
+        additive_prefix_attention_mask = self._to_additive_attention_mask(prefix_attention_mask)
         _, past_key_values = self.smolvlm_with_expert.forward(
             attention_mask=additive_prefix_attention_mask,
             position_ids=prefix_position_ids,
@@ -558,21 +573,15 @@ class SmolPI(BaseModel):
         suffix_embs = suffix_embs.to(dtype=self.dtype)
 
         batch_size, suffix_len = suffix_embs.shape[:2]
-        suffix_attention_mask, _ = build_blockwise_attention_mask(
-            suffix_block_markers
-        )
-        prefix_attention_mask = valid_prefix_tokens[:, None, :].expand(
-            batch_size, suffix_len, -1
-        )
-        attention_mask = torch.cat(
-            [prefix_attention_mask, suffix_attention_mask], dim=2
-        )
+        suffix_attention_mask, _ = build_blockwise_attention_mask(suffix_block_markers)
+        prefix_attention_mask = valid_prefix_tokens[:, None, :].expand(batch_size, suffix_len, -1)
+        attention_mask = torch.cat([prefix_attention_mask, suffix_attention_mask], dim=2)
         additive_attention_mask = self._to_additive_attention_mask(attention_mask)
 
         prefix_lengths = valid_prefix_tokens.sum(dim=1, keepdim=True)
-        suffix_offsets = torch.arange(
-            suffix_len, device=suffix_embs.device, dtype=torch.long
-        )[None, :]
+        suffix_offsets = torch.arange(suffix_len, device=suffix_embs.device, dtype=torch.long)[
+            None, :
+        ]
         position_ids = prefix_lengths + suffix_offsets
 
         outputs_embeds, _ = self.smolvlm_with_expert.forward(

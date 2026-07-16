@@ -8,8 +8,9 @@ import wandb
 
 from algorithms.base import BaseAlgorithm
 from algorithms.factory import register_algorithm
-from models.base import BaseModel
 from core.config import BehaviorCloningConfig
+from models.base import BaseModel
+
 
 @register_algorithm("BehaviorCloning")
 class BehaviorCloningTrainer(BaseAlgorithm):
@@ -25,9 +26,7 @@ class BehaviorCloningTrainer(BaseAlgorithm):
         self.device = device
 
         trainable_parameters = (
-            parameter
-            for parameter in policy.parameters()
-            if parameter.requires_grad
+            parameter for parameter in policy.parameters() if parameter.requires_grad
         )
 
         if config.use_8bit_adam:
@@ -56,9 +55,7 @@ class BehaviorCloningTrainer(BaseAlgorithm):
         batches_per_epoch = self.config.max_batches_per_epoch
 
         if batches_per_epoch is None:
-            raise ValueError(
-                "max_batches_per_epoch is required for cosine scheduling"
-            )
+            raise ValueError("max_batches_per_epoch is required for cosine scheduling")
 
         total_steps = max(1, self.config.epochs * batches_per_epoch // self.config.grad_accum_steps)
 
@@ -76,16 +73,13 @@ class BehaviorCloningTrainer(BaseAlgorithm):
 
             cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
 
-            return (
-                self.config.min_lr_ratio
-                + (1.0 - self.config.min_lr_ratio) * cosine
-            )
+            return self.config.min_lr_ratio + (1.0 - self.config.min_lr_ratio) * cosine
 
         return torch.optim.lr_scheduler.LambdaLR(
             self.optimizer,
             lr_lambda=lr_multiplier,
         )
-    
+
     def _amp_context(self):
         if not self.config.use_amp or self.device.type == "cpu":
             return nullcontext()
@@ -109,7 +103,10 @@ class BehaviorCloningTrainer(BaseAlgorithm):
                 )
 
                 for raw_batch in progress:
-                    if self.config.max_batches_per_epoch is not None and accumulated_batches >= self.config.max_batches_per_epoch:
+                    if (
+                        self.config.max_batches_per_epoch is not None
+                        and accumulated_batches >= self.config.max_batches_per_epoch
+                    ):
                         break
 
                     batch = self.batch_preprocessor(raw_batch)
@@ -142,15 +139,16 @@ class BehaviorCloningTrainer(BaseAlgorithm):
                         self.wandb_run.log(
                             {
                                 "train/loss": loss_value,
-                                "train/learning_rate": (
-                                    self.optimizer.param_groups[0]["lr"]
-                                ),
+                                "train/learning_rate": (self.optimizer.param_groups[0]["lr"]),
                                 "train/global_batch": self.global_batch,
                             },
                             step=self.global_batch,
                         )
 
-                    if self.config.checkpoint_every_steps > 0 and self.global_batch % self.config.checkpoint_every_steps == 0:
+                    if (
+                        self.config.checkpoint_every_steps > 0
+                        and self.global_batch % self.config.checkpoint_every_steps == 0
+                    ):
                         self.save_checkpoint(
                             self.config.checkpoint_dir / f"batch_{self.global_batch:08d}.pt",
                             epoch=epoch,
@@ -158,14 +156,8 @@ class BehaviorCloningTrainer(BaseAlgorithm):
 
                     progress.set_postfix(
                         loss=f"{loss_value:.4f}",
-                        lr=(
-                            f"{self.optimizer.param_groups[0]['lr']:.2e}"
-                        ),
-                        grad_norm=(
-                            f"{float(grad_norm):.3f}"
-                            if grad_norm is not None
-                            else "-"
-                        ),
+                        lr=(f"{self.optimizer.param_groups[0]['lr']:.2e}"),
+                        grad_norm=(f"{float(grad_norm):.3f}" if grad_norm is not None else "-"),
                     )
 
                 accumulated_batches = 0
@@ -196,15 +188,9 @@ class BehaviorCloningTrainer(BaseAlgorithm):
             weights_only=False,
         )
 
-        self.policy.load_state_dict(
-            checkpoint["policy_state_dict"]
-        )
-        self.optimizer.load_state_dict(
-            checkpoint["optimizer_state_dict"]
-        )
-        self.scheduler.load_state_dict(
-            checkpoint["scheduler_state_dict"]
-        )
+        self.policy.load_state_dict(checkpoint["policy_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
         self.global_batch = checkpoint["global_batch"]
         self.optimizer_step = checkpoint["optimizer_step"]

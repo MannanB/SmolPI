@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+
 import cv2
+
 
 def make_writer(path, width, height, fps):
     return cv2.VideoWriter(
@@ -9,19 +11,16 @@ def make_writer(path, width, height, fps):
         (width, height),
     )
 
+
 class BaseEnvironment(ABC):
     @abstractmethod
-    def reset(self):
-        ...
+    def reset(self): ...
 
     @abstractmethod
-    def step(self, action):
-        ...
+    def step(self, action): ...
 
     @abstractmethod
-    def rollout(self, seconds, action_horizon):
-        ...
+    def rollout(self, seconds, action_horizon): ...
 
     @abstractmethod
-    def close(self):
-        ...
+    def close(self): ...

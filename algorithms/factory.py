@@ -1,12 +1,14 @@
-from core.config import AlgorithmConfig
 from algorithms.base import BaseAlgorithm
+from core.config import AlgorithmConfig
 
 ALGORITHM_REGISTRY: dict[str, type] = {}
+
 
 def register_algorithm(name: str):
     def decorator(cls):
         ALGORITHM_REGISTRY[name] = cls
         return cls
+
     return decorator
 
 

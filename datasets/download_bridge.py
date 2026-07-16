@@ -1,13 +1,12 @@
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 from urllib.parse import urljoin
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-
 
 BASE_URL = "https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/1.0.0/"
 OUT_DIR = "bridge_dataset_1.0.0"
@@ -81,7 +80,7 @@ def get_session():
 def download_file(url):
     session = get_session()
 
-    rel_path = url[len(BASE_URL):]
+    rel_path = url[len(BASE_URL) :]
     out_path = os.path.join(OUT_DIR, rel_path)
     tmp_path = out_path + ".part"
 

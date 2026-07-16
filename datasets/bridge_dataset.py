@@ -1,30 +1,28 @@
+from pathlib import Path
+
 import numpy as np
 import tensorflow as tf
-from pathlib import Path
 
 from core.config import BridgeDatasetConfig
 from datasets.factory import register_dataloader
 
-tf.config.set_visible_devices([], "GPU")  # Disable GPU for TF to avoid memory conflicts with PyTorch
-
-import tqdm
-from typing import Any
-import tensorflow_datasets as tfds
+tf.config.set_visible_devices(
+    [], "GPU"
+)  # Disable GPU for TF to avoid memory conflicts with PyTorch
 
 from collections.abc import Iterator
-from pathlib import Path
 
-import numpy as np
+import tensorflow_datasets as tfds
 import torch
+import tqdm
 from torch.utils.data import IterableDataset
 
-BRIDGE_IMAGE_KEYS = ("image_0", "image_1") #, "image_2", "image_3")
+BRIDGE_IMAGE_KEYS = ("image_0", "image_1")  # , "image_2", "image_3")
+
 
 def compute_action_stats(episodes, action_dim):
     actions = episodes.flat_map(
-        lambda episode: episode["steps"].map(
-            lambda step: tf.cast(step["action"], tf.float32)
-        )
+        lambda episode: episode["steps"].map(lambda step: tf.cast(step["action"], tf.float32))
     ).batch(50)
 
     count = 0
@@ -46,7 +44,7 @@ def compute_action_stats(episodes, action_dim):
     mean = total / count
     variance = total_sq / count - np.square(mean)
     std = np.sqrt(np.maximum(variance, 1e-12))
-    
+
     print("Action mean:", mean)
     print("Action std: ", std)
 
@@ -60,7 +58,7 @@ def compute_action_stats(episodes, action_dim):
 def load_or_compute_action_stats(episodes: tf.data.Dataset, action_dim: int, stats_path: Path):
     if stats_path.exists():
         loaded = np.load(stats_path)
-        print("Loaded action statistics", "mean:", loaded["mean"], "std:", loaded["std"])  
+        print("Loaded action statistics", "mean:", loaded["mean"], "std:", loaded["std"])
         return {
             "count": loaded["count"],
             "mean": loaded["mean"],
@@ -71,12 +69,13 @@ def load_or_compute_action_stats(episodes: tf.data.Dataset, action_dim: int, sta
 
     stats = compute_action_stats(episodes, action_dim=action_dim)
     stats_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(stats_path,**stats)
+    np.savez(stats_path, **stats)
 
     print("Action mean:", stats["mean"])
     print("Action std: ", stats["std"])
 
     return stats
+
 
 def build_bridge_dataset(
     dataset_path: Path,
@@ -88,14 +87,12 @@ def build_bridge_dataset(
 ):
     builder = tfds.builder_from_directory(dataset_path)
     episodes = builder.as_dataset(split=split, shuffle_files=True)
-    episodes = episodes.filter(
-        lambda episode: episode["episode_metadata"]["has_language"]
-    )
+    episodes = episodes.filter(lambda episode: episode["episode_metadata"]["has_language"])
 
     stats_episodes = (
         episodes
         # .shuffle(5_000, seed=42, reshuffle_each_iteration=False) shuffling hangs
-        .take(1000)  
+        .take(1000)
     )
 
     action_stats = load_or_compute_action_stats(stats_episodes, action_dim=7, stats_path=stats_path)
@@ -127,6 +124,7 @@ def build_bridge_dataset(
                 "language_instruction": step["language_instruction"],
                 "actions": actions,
             }
+
         return tf.data.Dataset.zip((steps, action_windows)).map(
             make_transition, num_parallel_calls=tf.data.AUTOTUNE
         )
@@ -147,7 +145,6 @@ class BridgeDataset(IterableDataset):
         self,
         config: BridgeDatasetConfig,
         action_horizon: int,
-
     ) -> None:
         self.config = config
         self.action_horizon = action_horizon
@@ -172,8 +169,11 @@ class BridgeDataset(IterableDataset):
                 "language_instruction": batch["language_instruction"],
             }
 
+
 @register_dataloader("Bridge")
-def create_bridge_data_loader(config: BridgeDatasetConfig, action_horizon: int) -> torch.utils.data.DataLoader:
+def create_bridge_data_loader(
+    config: BridgeDatasetConfig, action_horizon: int
+) -> torch.utils.data.DataLoader:
     dataset = BridgeDataset(config=config, action_horizon=action_horizon)
     return torch.utils.data.DataLoader(
         dataset,

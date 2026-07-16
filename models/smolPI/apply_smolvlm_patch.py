@@ -2,10 +2,9 @@ import argparse
 import ast
 import importlib.util
 import os
-from pathlib import Path
 import shutil
 import tempfile
-
+from pathlib import Path
 
 CLASS_NAME = "SmolVLMVisionEmbeddings"
 MODULE_NAME = "transformers.models.smolvlm.modeling_smolvlm"
@@ -41,7 +40,9 @@ def find_target() -> Path:
 
 def find_class(source: str) -> ast.ClassDef:
     tree = ast.parse(source)
-    matches = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == CLASS_NAME]
+    matches = [
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == CLASS_NAME
+    ]
     if len(matches) != 1:
         raise RuntimeError(f"Expected one {CLASS_NAME} class, found {len(matches)}")
     return matches[0]
@@ -52,7 +53,7 @@ def apply_patch(target: Path, check_only: bool) -> bool:
     replacement = load_replacement()
     class_node = find_class(source)
     source_lines = source.splitlines(keepends=True)
-    current_class = "".join(source_lines[class_node.lineno - 1:class_node.end_lineno])
+    current_class = "".join(source_lines[class_node.lineno - 1 : class_node.end_lineno])
 
     if current_class.strip() == replacement.strip():
         print(f"Patch already applied: {target}")
@@ -64,9 +65,9 @@ def apply_patch(target: Path, check_only: bool) -> bool:
     newline = "\r\n" if "\r\n" in source else "\n"
     replacement = replacement.replace("\n", newline)
     updated_source = "".join(
-        source_lines[:class_node.lineno - 1]
+        source_lines[: class_node.lineno - 1]
         + [replacement]
-        + source_lines[class_node.end_lineno:]
+        + source_lines[class_node.end_lineno :]
     )
     ast.parse(updated_source)
 
@@ -96,8 +97,14 @@ def apply_patch(target: Path, check_only: bool) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Patch the installed Transformers SmolVLM vision embeddings")
-    parser.add_argument("--check", action="store_true", help="Check whether the patch is required without changing files")
+    parser = argparse.ArgumentParser(
+        description="Patch the installed Transformers SmolVLM vision embeddings"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check whether the patch is required without changing files",
+    )
     parser.add_argument("--target", type=Path, help="Override the modeling_smolvlm.py path")
     args = parser.parse_args()
 
